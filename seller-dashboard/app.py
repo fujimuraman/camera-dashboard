@@ -574,6 +574,13 @@ def _start_scheduler(app):
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = config.SECRET_KEY
+    # Remember-me cookie は30日。Cloudflare Access 経由の HTTPS 前提で Secure
+    app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
+    app.config["REMEMBER_COOKIE_HTTPONLY"] = True
+    app.config["REMEMBER_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    # Secure 属性は付けない: localhost(http)/Cloudflare(https) 両方で動作させるため
 
     login_manager.init_app(app)
 
@@ -665,7 +672,8 @@ def create_app():
                 request.form.get("password", ""),
             )
             if user:
-                login_user(user)
+                remember = bool(request.form.get("remember"))
+                login_user(user, remember=remember)
                 return redirect(request.args.get("next") or url_for("dashboard"))
             flash("ユーザー名かパスワードが違います", "danger")
         return render_template("login.html")

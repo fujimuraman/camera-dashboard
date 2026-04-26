@@ -21,7 +21,29 @@ LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(exist_ok=True)
 
 # Flask
-SECRET_KEY = os.getenv("FUJI_DASH_SECRET", "change-me-in-production-" + os.urandom(8).hex())
+def _load_or_create_secret_key():
+    """SECRET_KEY を環境変数 → ファイル の順に取得。無ければ生成して保存。
+    再起動しても同じ値を使うので Remember-me cookie が無効化されない。
+    """
+    env_v = os.getenv("FUJI_DASH_SECRET")
+    if env_v:
+        return env_v
+    secret_file = BASE_DIR / ".secret_key"
+    if secret_file.exists():
+        try:
+            v = secret_file.read_text(encoding="utf-8").strip()
+            if v:
+                return v
+        except Exception:
+            pass
+    new_v = os.urandom(32).hex()
+    try:
+        secret_file.write_text(new_v, encoding="utf-8")
+    except Exception:
+        pass
+    return new_v
+
+SECRET_KEY = _load_or_create_secret_key()
 HOST = "0.0.0.0"  # 外部アクセス可（Cloudflare Tunnel 経由）
 PORT = int(os.getenv("FUJI_DASH_PORT", "8080"))
 

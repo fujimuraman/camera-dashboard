@@ -5,16 +5,22 @@
     <div class="card mt-5">
       <div class="card-body">
         <h3 class="card-title text-center">📷 {{ shop_name }}</h3>
-        <form method="post">
+        <form method="post" action="" autocomplete="on">
           <div class="mb-3">
-            <label class="form-label">ユーザー名</label>
-            <input type="text" name="username" class="form-control" autofocus>
+            <label class="form-label" for="username">ユーザー名</label>
+            <input type="text" id="username" name="username" class="form-control"
+                   autocomplete="username" autofocus required>
           </div>
           <div class="mb-3">
-            <label class="form-label">パスワード</label>
-            <input type="password" name="password" class="form-control">
+            <label class="form-label" for="password">パスワード</label>
+            <input type="password" id="password" name="password" class="form-control"
+                   autocomplete="current-password" required>
           </div>
-          <button class="btn btn-primary w-100">ログイン</button>
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" id="remember" name="remember" value="1" checked>
+            <label class="form-check-label" for="remember">ログイン状態を保持する（30日間）</label>
+          </div>
+          <button class="btn btn-primary w-100" type="submit">ログイン</button>
         </form>
       </div>
     </div>
