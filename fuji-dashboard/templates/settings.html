@@ -82,10 +82,13 @@
 <form method="post" class="mb-4">
   <input type="hidden" name="form_type" value="spapi">
   <div class="card">
-    <div class="card-header">🔑 SP-API 認証情報</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>🔑 SP-API 認証情報</span>
+      <span class="badge bg-danger">必須</span>
+    </div>
     <div class="card-body">
       <p class="small text-muted">
-        Amazon Seller Central の Developer Console で取得した値を入力。
+        <strong>このアプリの動作に必須</strong>。Amazon Seller Central の Developer Console で取得。
         既に保存済みの値はマスク表示（先頭 <code>********</code>）で、そのままにすれば変更されません。
       </p>
       <div class="row g-2">
@@ -115,8 +118,15 @@
 <form method="post" class="mb-4" enctype="multipart/form-data">
   <input type="hidden" name="form_type" value="sheets">
   <div class="card">
-    <div class="card-header">📊 仕入れ価格取得元（Google スプレッドシート）</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>📊 仕入れ価格取得元（Google スプレッドシート）</span>
+      <span class="badge bg-secondary">オプション</span>
+    </div>
     <div class="card-body">
+      <p class="small text-muted">
+        Google スプレッドシートで管理している仕入れ台帳から、SKU と原価を自動取得したい場合のみ設定。
+        <strong>不要なら未入力でOK</strong>（仕入値は在庫画面で手入力もできます）。
+      </p>
       <div class="alert alert-warning small">
         ⚠️ サービスアカウントJSON（credentials.json）をアップロード後、対象スプレッドシートに <strong>閲覧（読み取り）権限</strong> を共有付与してください。<br>
         サービスアカウントメールは JSON 内の <code>client_email</code> 欄をスプレッドシート「共有」で追加。
@@ -155,11 +165,15 @@
 <form method="post" class="mb-4">
   <input type="hidden" name="form_type" value="keepa">
   <div class="card">
-    <div class="card-header">📈 Keepa API（全体販売数推定）</div>
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>📈 Keepa API（全体販売数推定）</span>
+      <span class="badge bg-secondary">オプション</span>
+    </div>
     <div class="card-body">
       <p class="small text-muted">
         Keepa の Sales Rank Drops から、各 ASIN の <strong>30/90/180日間の推定販売数</strong>を取得し、
         在庫一覧の「販売数 自分/全体」の全体側に表示します。
+        <strong>不要なら未入力でOK</strong>（販売数の自分側だけ表示されます）。
       </p>
       <div class="alert alert-warning small mb-3">
         <strong>必要なもの:</strong> Keepa の有料 API key（<a href="https://keepa.com/#!api" target="_blank">https://keepa.com/#!api</a>）<br>
