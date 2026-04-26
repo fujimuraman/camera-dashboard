@@ -768,7 +768,7 @@ def sync_cost_prices() -> int:
                     sale_flag=excluded.sale_flag
             """, (sku, asin, cost, supplier, date, i, now_iso, sale_date, sale_flag))
             count += 1
-        # 注: SKU は一意キーのため、接尾辞付き SKU (D05-1407-1 等) を別 SKU として
+        # 注: SKU は一意キーのため、接尾辞付き SKU（例: ABC-123-1）を別 SKU として
         # ユーザーが手動登録するのが正。自動継承はせず、
         # 仕入れ値未記入の SKU は在庫一覧上部の警告で可視化する。
     return count
