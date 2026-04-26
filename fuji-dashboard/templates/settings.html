@@ -112,19 +112,29 @@
 </form>
 
 <!-- ④ 外部連携: Google スプレッドシート（仕入れ価格） -->
-<form method="post" class="mb-4">
+<form method="post" class="mb-4" enctype="multipart/form-data">
   <input type="hidden" name="form_type" value="sheets">
   <div class="card">
     <div class="card-header">📊 仕入れ価格取得元（Google スプレッドシート）</div>
     <div class="card-body">
       <div class="alert alert-warning small">
-        ⚠️ 指定したスプレッドシートには、サービスアカウントの <strong>閲覧（読み取り）権限</strong> を付与してください。<br>
-        サービスアカウント例: <code>fuji-dashboard@xxx.iam.gserviceaccount.com</code>（この ID をスプレッドシートの「共有」で追加）
+        ⚠️ サービスアカウントJSON（credentials.json）をアップロード後、対象スプレッドシートに <strong>閲覧（読み取り）権限</strong> を共有付与してください。<br>
+        サービスアカウントメールは JSON 内の <code>client_email</code> 欄をスプレッドシート「共有」で追加。
       </div>
+
       <div class="row g-2">
+        <div class="col-md-12 mb-2">
+          <label class="form-label">サービスアカウントJSON（credentials.json）</label>
+          <input type="file" name="google_creds_file" class="form-control" accept=".json,application/json">
+          {% if google_creds_path_status %}
+          <small class="text-success">✓ 設定済み: {{ google_creds_path_status }}</small>
+          {% else %}
+          <small class="text-muted">※ 未設定。仕入れ台帳同期を使う場合のみアップロード。</small>
+          {% endif %}
+        </div>
         <div class="col-md-12">
-          <label class="form-label">スプレッドシート URL</label>
-          <input type="url" name="sheet_url" value="{{ sheet_url }}" class="form-control" placeholder="https://docs.google.com/spreadsheets/d/.../edit">
+          <label class="form-label">スプレッドシート URL（or ID）</label>
+          <input type="text" name="sheet_url" value="{{ sheet_url }}" class="form-control" placeholder="https://docs.google.com/spreadsheets/d/.../edit">
         </div>
         <div class="col-md-3">
           <label class="form-label">SKU 列</label>

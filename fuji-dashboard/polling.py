@@ -1029,6 +1029,9 @@ if __name__ == "__main__":
     # 単体実行用
     import io as _io
     sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", line_buffering=True)
+    # スタンドアロン実行時もDBの設定値を環境変数に流す
+    from env_bootstrap import bootstrap_env_from_db
+    bootstrap_env_from_db()
     print("Polling 実行開始...")
     r = run_all_polling(days=7)
     print(json.dumps(r, ensure_ascii=False, indent=2))

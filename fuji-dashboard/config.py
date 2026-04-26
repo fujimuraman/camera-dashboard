@@ -12,6 +12,9 @@ try:
         load_dotenv(_env_file)
 except ImportError:
     pass  # dotenv 未インストールでも動作（環境変数は OS から読む）
+
+# 注: DBから環境変数への流し込みは app.py / polling.py の起動時に
+# bootstrap_env_from_db() を呼ぶ（config.py 内では循環参照になるためここでは呼ばない）
 # DB ファイルパス（環境変数で上書き可。テスト用に別DBを使うのに便利）
 DB_PATH = Path(os.getenv("FUJI_DASH_DB", str(BASE_DIR / "data.db")))
 LOGS_DIR = BASE_DIR / "logs"

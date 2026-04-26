@@ -581,6 +581,11 @@ def create_app():
     init_db()
     ensure_initial_user()
 
+    # DBの設定値を環境変数に流し込む（設定画面で入力した値を SP-API/Sheets から透過利用）
+    # .env が優先（既存環境は壊さない）
+    from env_bootstrap import bootstrap_env_from_db
+    bootstrap_env_from_db()
+
     # テンプレート全体にショップ名・最終同期時刻を注入
     @app.context_processor
     def _inject_shop():
@@ -1786,6 +1791,30 @@ def create_app():
                 for k in ("sheet_url", "sheet_sku_col", "sheet_cost_col"):
                     v = request.form.get(k, "").strip()
                     set_setting(k, v)
+                # サービスアカウントJSON のアップロード処理
+                creds_file = request.files.get("google_creds_file")
+                if creds_file and creds_file.filename:
+                    try:
+                        # JSONバリデーション
+                        import json as _json
+                        content = creds_file.read()
+                        parsed = _json.loads(content)
+                        if parsed.get("type") != "service_account":
+                            flash("アップロードされたファイルがサービスアカウントJSONではありません", "danger")
+                        else:
+                            # 保存先（DB配下）
+                            from config import BASE_DIR
+                            creds_dir = BASE_DIR / "secrets"
+                            creds_dir.mkdir(exist_ok=True)
+                            creds_path = creds_dir / "google_creds.json"
+                            with open(creds_path, "wb") as f:
+                                f.write(content)
+                            set_setting("google_creds_path", str(creds_path))
+                            # 環境変数にも即反映（再起動不要）
+                            os.environ["GOOGLE_CREDS_PATH"] = str(creds_path)
+                            flash(f"✓ サービスアカウントJSON を保存しました（{parsed.get('client_email','')}）", "success")
+                    except Exception as e:
+                        flash(f"JSONアップロードエラー: {e}", "danger")
                 flash("スプレッドシート設定を保存しました", "success")
             elif form_type == "keepa":
                 v = request.form.get("keepa_api_key", "").strip()
@@ -1859,6 +1888,9 @@ def create_app():
             "sheet_url":     get_setting("sheet_url", "") or "",
             "sheet_sku_col": get_setting("sheet_sku_col", "A") or "A",
             "sheet_cost_col": get_setting("sheet_cost_col", "K") or "K",
+            "google_creds_path_status": (
+                get_setting("google_creds_path", "") or os.getenv("GOOGLE_CREDS_PATH", "")
+            ).split("/")[-1].split("\\")[-1] if (get_setting("google_creds_path", "") or os.getenv("GOOGLE_CREDS_PATH", "")) else "",
             "keepa_api_key": mask(get_setting("keepa_api_key", "")),
             "keepa_updated_at": get_setting("keepa_last_sync", ""),
             "auto_price_apply": get_setting("auto_price_apply", "0") == "1",
