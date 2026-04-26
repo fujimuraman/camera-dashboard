@@ -40,3 +40,4 @@ python app.py
 2. 仕入れ台帳連携
 3. 価格調整エンジン
 4. Cloudflare Tunnel セットアップ
+
