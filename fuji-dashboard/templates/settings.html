@@ -281,7 +281,7 @@
         <label class="form-check-label" for="ip_manual">
           <strong>手動反映（推奨）</strong>
           <small class="text-muted d-block">
-            編集すると DB のみ更新。ヘッダーの「🔄 価格更新」ボタンで未反映分をまとめて Amazon に PATCH。
+            編集すると DB のみ更新。ヘッダーの「🔄 価格更新」ボタンで未反映分をまとめて Amazon に送信して反映。
           </small>
         </label>
       </div>
@@ -292,7 +292,7 @@
         <label class="form-check-label" for="ip_auto">
           <strong>即時反映</strong>
           <small class="text-muted d-block">
-            編集確定（Tab/Enter）と同時に Amazon Listings API へ PATCH。失敗時はアラートで通知。
+            編集確定（Tab/Enter）と同時に Amazon に直接送信して反映。失敗時はアラートで通知。
           </small>
         </label>
       </div>
@@ -314,7 +314,7 @@
         <input type="checkbox" name="auto_price_apply" id="auto_price_apply"
                class="form-check-input" {% if auto_price_apply %}checked{% endif %}>
         <label class="form-check-label" for="auto_price_apply">
-          Amazon への PATCH 反映を有効化（OFF の間は DB ログのみ記録）
+          Amazon に自動反映する（OFFの間は変更ログのみ記録、Amazon側は変更されません）
         </label>
       </div>
       <button class="btn btn-primary">保存</button>
