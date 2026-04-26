@@ -1,0 +1,465 @@
+{% extends "base.html" %}
+{% block title %}決算{% endblock %}
+{% block content %}
+<h2>📊 決算 <small class="text-muted">{{ start_date }} 〜 {{ end_date }}</small></h2>
+
+{# 期間: 当月/前月/年間 + 任意の年月選択 #}
+<div class="card mt-3">
+  <div class="card-body py-2">
+    <div class="d-flex gap-2 flex-wrap align-items-center small">
+      <span class="text-muted">期間:</span>
+      <a class="btn btn-sm {% if preset=='this' %}btn-primary{% else %}btn-outline-primary{% endif %}" href="?preset=this">当月</a>
+      <a class="btn btn-sm {% if preset=='prev' %}btn-primary{% else %}btn-outline-primary{% endif %}" href="?preset=prev">前月</a>
+      <a class="btn btn-sm {% if preset=='year' %}btn-primary{% else %}btn-outline-primary{% endif %}" href="?preset=year">年間</a>
+
+      <span class="text-muted ms-3">年月指定:</span>
+      {% set _sd = start_date %}
+      {% set _cur_y = _sd[:4]|int %}
+      {% set _cur_m = _sd[5:7]|int %}
+      {% set _ed = end_date %}
+      {% set _is_month = (preset == 'custom' and _sd.endswith('-01') and _ed[:7] == _sd[:7]) %}
+      <select id="acc-y" class="form-select form-select-sm" style="width:auto"
+              onchange="document.getElementById('acc-go').click()">
+        {% for y in bs_years %}
+        <option value="{{ y }}" {% if y == _cur_y %}selected{% endif %}>{{ y }}年</option>
+        {% endfor %}
+      </select>
+      <select id="acc-m" class="form-select form-select-sm" style="width:auto"
+              onchange="document.getElementById('acc-go').click()">
+        {% for m in bs_months %}
+        <option value="{{ m }}" {% if m == _cur_m and _is_month %}selected{% endif %}>{{ m }}月</option>
+        {% endfor %}
+      </select>
+      <a id="acc-go" href="#" class="d-none"
+         onclick="event.preventDefault();
+                  var y=document.getElementById('acc-y').value;
+                  var m=document.getElementById('acc-m').value.padStart(2,'0');
+                  var lastDay=new Date(y, parseInt(m), 0).getDate();
+                  location.href='?preset=custom&from='+y+'-'+m+'-01&to='+y+'-'+m+'-'+lastDay;">go</a>
+    </div>
+  </div>
+</div>
+
+<!-- 月別比較表（指定年） -->
+{% if monthly_summaries %}
+<div class="card mt-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>📅 月別比較 — {{ bs.year }}年</span>
+    <small class="text-muted">列の合計は当年累計</small>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm pl-table mb-0" style="font-size:0.875rem; min-width:900px;">
+        <thead class="table-light">
+          <tr>
+            <th style="min-width:130px">項目</th>
+            {% for m in monthly_summaries %}
+            <th class="text-end" style="min-width:90px">{{ m.month }}月</th>
+            {% endfor %}
+            <th class="text-end" style="min-width:100px"><strong>合計</strong></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set rows = [
+            ('販売数', 'qty', '個', false),
+            ('総売上高', 'gross_sales', '¥', false),
+            ('プロモ割引(▲)', 'promo', '¥', false),
+            ('純売上高', 'net_sales', '¥', true),
+            ('売上原価(仕入)', 'cost', '¥', false),
+            ('売上総利益', 'gross_profit', '¥', true),
+            ('Amazon手数料', 'amz_fee', '¥', false),
+            ('荷造運賃(発送代行)', 'shipping', '¥', false),
+            ('その他販管費', 'other_sga', '¥', false),
+            ('販管費合計', 'sga_total', '¥', true),
+            ('営業利益', 'op_profit', '¥', true),
+            ('営業外収益', 'non_op', '¥', false),
+            ('当期純利益', 'net_profit', '¥', true),
+          ] %}
+          {% for label, key, unit, bold in rows %}
+          {% set total = monthly_summaries|map(attribute=key)|sum %}
+          <tr {% if bold %}class="pl-subtotal"{% endif %}>
+            <td>{% if bold %}<strong>{{ label }}</strong>{% else %}{{ label }}{% endif %}</td>
+            {% for m in monthly_summaries %}
+              {% set v = m[key] %}
+              <td class="text-end {% if v < 0 %}text-danger{% elif v == 0 %}text-muted{% endif %}">
+                {% if unit == '個' %}{{ v|int }}{% else %}{% if v %}¥{{ "{:,}".format(v|int) }}{% else %}—{% endif %}{% endif %}
+              </td>
+            {% endfor %}
+            <td class="text-end {% if total < 0 %}text-danger{% endif %}">
+              {% if bold %}<strong>{% if unit == '個' %}{{ total|int }}{% else %}¥{{ "{:,}".format(total|int) }}{% endif %}</strong>
+              {% else %}{% if unit == '個' %}{{ total|int }}{% else %}{% if total %}¥{{ "{:,}".format(total|int) }}{% else %}—{% endif %}{% endif %}{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {# 利益率行 #}
+          <tr class="text-muted small">
+            <td>利益率(%)</td>
+            {% for m in monthly_summaries %}
+            <td class="text-end">{% if m.net_sales %}{{ "%.1f"|format((m.op_profit / m.net_sales) * 100) }}%{% else %}—{% endif %}</td>
+            {% endfor %}
+            {% set t_sales = monthly_summaries|map(attribute='net_sales')|sum %}
+            {% set t_op = monthly_summaries|map(attribute='op_profit')|sum %}
+            <td class="text-end"><strong>{% if t_sales %}{{ "%.1f"|format((t_op / t_sales) * 100) }}%{% else %}—{% endif %}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="small text-muted px-3 py-2 mb-0">
+      ※ 表示年は B/S の年セレクタと連動。各月の数値は P/L ロジック（純売上 = 総売上 − プロモ、営業利益 = 売上総利益 − 販管費）に基づく。<br>
+      ※ Pending/Canceled/返品は集計から除外。
+    </p>
+  </div>
+</div>
+{% endif %}
+
+<!-- 費目別集計（確定申告 P/L 補助） -->
+<div class="card mt-3">
+  <div class="card-header">📋 費目別集計（確定申告用）— {{ start_date }} 〜 {{ end_date }}</div>
+  <div class="card-body p-0">
+    <div class="row g-0">
+      <div class="col-md-6">
+        <table class="table table-sm mb-0">
+          <thead class="table-light"><tr><th>収入</th><th class="text-end" style="width:140px">金額</th></tr></thead>
+          <tbody>
+            <tr><td>売上高</td><td class="text-end">¥{{ "{:,}".format(kpi.sales_total|int) }}</td></tr>
+            {% if kpi.shipping_income %}<tr><td>送料/ギフト入金</td><td class="text-end">¥{{ "{:,}".format(kpi.shipping_income|int) }}</td></tr>{% endif %}
+            <tr class="table-secondary"><td><strong>収入合計</strong></td><td class="text-end"><strong>¥{{ "{:,}".format((kpi.sales_total + kpi.shipping_income)|int) }}</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col-md-6">
+        <table class="table table-sm mb-0">
+          <thead class="table-light"><tr><th>経費（費目別）</th><th class="text-end" style="width:140px">金額</th></tr></thead>
+          <tbody>
+            <tr><td>仕入高</td><td class="text-end">¥{{ "{:,}".format(kpi.cost_total|int) }}</td></tr>
+            {% for tc, amt in tax_breakdown %}<tr><td>{{ tc }}</td><td class="text-end">¥{{ "{:,}".format(amt|int) }}</td></tr>{% endfor %}
+            {% if not tax_breakdown %}<tr><td colspan="2" class="text-muted small text-center py-3">経費の入力なし</td></tr>{% endif %}
+            {% set total_exp = kpi.cost_total + (tax_breakdown|map(attribute=1)|sum) %}
+            <tr class="table-secondary"><td><strong>経費合計</strong></td><td class="text-end"><strong>¥{{ "{:,}".format(total_exp|int) }}</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 損益計算書 (P/L) -->
+<div class="card mt-3">
+  <div class="card-header">📊 損益計算書 (P/L) — {{ start_date }} 〜 {{ end_date }}</div>
+  <div class="card-body p-0">
+    <table class="table table-sm pl-table mb-0">
+      <tbody>
+        <tr class="pl-section"><td colspan="3"><strong>Ⅰ. 売上高</strong></td></tr>
+        <tr>
+          <td style="padding-left:2em">総売上高（含 送料/ギフト入金）</td>
+          <td class="text-end">¥{{ "{:,}".format(pl.gross_sales|int) }}</td>
+          <td></td>
+        </tr>
+        {% if pl.promo_discount %}
+        <tr>
+          <td style="padding-left:2em">(-) 売上値引（プロモ割引）</td>
+          <td class="text-end text-muted">▲ ¥{{ "{:,}".format(pl.promo_discount|int) }}</td>
+          <td></td>
+        </tr>
+        {% endif %}
+        <tr class="pl-subtotal">
+          <td style="padding-left:2em">純売上高</td>
+          <td></td>
+          <td class="text-end">¥{{ "{:,}".format(pl.sales|int) }}</td>
+        </tr>
+
+        <tr class="pl-section"><td colspan="3"><strong>Ⅱ. 売上原価</strong></td></tr>
+        <tr>
+          <td style="padding-left:2em">仕入高</td>
+          <td class="text-end">¥{{ "{:,}".format(pl.cost_of_sales|int) }}</td>
+          <td></td>
+        </tr>
+        <tr class="pl-subtotal">
+          <td style="padding-left:2em">売上原価合計</td>
+          <td></td>
+          <td class="text-end">¥{{ "{:,}".format(pl.cost_of_sales|int) }}</td>
+        </tr>
+
+        <tr class="pl-total">
+          <td><strong>売上総利益</strong></td>
+          <td></td>
+          <td class="text-end {% if pl.gross_profit > 0 %}text-success{% else %}text-danger{% endif %}">
+            <strong>¥{{ "{:,}".format(pl.gross_profit|int) }}</strong>
+          </td>
+        </tr>
+
+        <tr class="pl-section"><td colspan="3"><strong>Ⅲ. 販売費及び一般管理費</strong></td></tr>
+        {% if pl.sga_items %}
+          {% for tc, amt in pl.sga_items %}
+          <tr>
+            <td style="padding-left:2em">{{ tc }}</td>
+            <td class="text-end">¥{{ "{:,}".format(amt|int) }}</td>
+            <td></td>
+          </tr>
+          {% endfor %}
+          <tr class="pl-subtotal">
+            <td style="padding-left:2em">販管費合計</td>
+            <td></td>
+            <td class="text-end">¥{{ "{:,}".format(pl.sga_total|int) }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="3" class="text-muted small text-center">入力された経費なし</td></tr>
+        {% endif %}
+
+        <tr class="pl-total">
+          <td><strong>営業利益</strong></td>
+          <td></td>
+          <td class="text-end {% if pl.operating_profit > 0 %}text-success{% else %}text-danger{% endif %}">
+            <strong>¥{{ "{:,}".format(pl.operating_profit|int) }}</strong>
+          </td>
+        </tr>
+
+        {% if pl.non_op_income %}
+        <tr class="pl-section"><td colspan="3"><strong>Ⅳ. 営業外収益</strong></td></tr>
+        <tr>
+          <td style="padding-left:2em">プラス計上</td>
+          <td class="text-end">¥{{ "{:,}".format(pl.non_op_income|int) }}</td>
+          <td></td>
+        </tr>
+        {% endif %}
+
+        <tr class="pl-grandtotal">
+          <td><strong>当期純利益</strong></td>
+          <td></td>
+          <td class="text-end {% if pl.net_profit > 0 %}text-success{% else %}text-danger{% endif %}">
+            <strong>¥{{ "{:,}".format(pl.net_profit|int) }}</strong>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="small text-muted px-3 py-2 mb-0">
+      ※ 簡易版 P/L。期首/期末棚卸の差額は売上原価に含めず、cost_price × 販売数量を売上原価としています。<br>
+      ※ プラス計上は営業外収益として末尾で加算しています。<br>
+      {% if pl.refund_count %}
+      ※ 返品 {{ pl.refund_count }}件（合計 ¥{{ "{:,}".format(pl.refund_amount|int) }}）は中古品の在庫戻し再販のため売上・仕入・手数料すべて除外しています。<br>
+      {% endif %}
+    </p>
+  </div>
+</div>
+
+<!-- 貸借対照表 (B/S) — 期首/期末 2列レイアウト -->
+<div class="card mt-3" id="bs-section">
+  <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <span>📒 貸借対照表 (B/S)</span>
+    <form method="get" class="d-flex gap-1 align-items-center small">
+      {% if preset %}<input type="hidden" name="preset" value="{{ preset }}">{% endif %}
+      {% if tab %}<input type="hidden" name="tab" value="{{ tab }}">{% endif %}
+      <select name="bs_year" class="form-select form-select-sm" onchange="this.form.submit()">
+        {% for y in bs_years %}
+        <option value="{{ y }}" {% if y == bs.year %}selected{% endif %}>{{ y }}年</option>
+        {% endfor %}
+      </select>
+      <select name="bs_month" class="form-select form-select-sm" onchange="this.form.submit()">
+        {% for m in bs_months %}
+        <option value="{{ m }}" {% if m == bs.month %}selected{% endif %}>{{ m }}月末</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  <form method="post" action="{{ url_for('save_balance_sheet') }}" class="mb-0">
+    <input type="hidden" name="ym_start" value="{{ bs.ym_start }}">
+    <input type="hidden" name="ym_end"   value="{{ bs.ym_end }}">
+
+    <div class="card-body p-0">
+      <table class="table table-sm bs-table mb-0">
+        <thead class="table-light">
+          <tr>
+            <th rowspan="2" style="vertical-align:middle">項目</th>
+            <th class="text-center bs-period-start" colspan="2">期首（{{ bs.year }}年1月1日）</th>
+            <th class="text-center bs-period-end" colspan="2">期末（{{ bs.year }}年{{ bs.month }}月末）</th>
+          </tr>
+          <tr>
+            <th class="text-end bs-period-start small" style="width:130px">金額</th>
+            <th class="bs-period-start small">メモ</th>
+            <th class="text-end bs-period-end small" style="width:130px">金額</th>
+            <th class="bs-period-end small">メモ</th>
+          </tr>
+        </thead>
+
+        {# ===== 資産の部 ===== #}
+        <thead><tr class="bs-section-head"><td colspan="5"><strong>資産の部</strong></td></tr></thead>
+        {% for sec in bs.start.sections if sec.side == 'asset' %}
+        <thead><tr class="bs-subhead"><td colspan="5">【{{ sec.subgroup }}】</td></tr></thead>
+        <tbody>
+          {% for item in sec.entries %}
+          {% set end_item = (bs.end.sections | selectattr('subgroup','equalto',sec.subgroup) | first).entries | selectattr('category','equalto',item.category) | first %}
+          <tr>
+            <td class="bs-cat-cell">
+              {{ item.category }}
+              {% if item.kind == 'auto' %}<span class="badge bg-info ms-1" title="システム自動">自動</span>{% endif %}
+            </td>
+            {% if item.kind == 'auto' %}
+              <td class="bs-amount-cell text-muted">¥{{ "{:,}".format(item.amount|int) }}</td>
+              <td class="bs-note-cell"></td>
+            {% else %}
+              <td class="bs-amount-cell">
+                <div class="yen-input"><span class="yen-prefix">¥</span>
+                  <input type="number" step="1" name="bs_start_amt_{{ item.category }}"
+                         class="form-control form-control-sm no-spin"
+                         value="{{ item.amount|int if item.amount else 0 }}"></div>
+              </td>
+              <td class="bs-note-cell">
+                <input type="text" name="bs_start_note_{{ item.category }}"
+                       class="form-control form-control-sm" value="{{ item.note }}" placeholder="メモ" maxlength="100">
+              </td>
+            {% endif %}
+            {% if end_item.kind == 'auto' %}
+              <td class="bs-amount-cell text-muted">¥{{ "{:,}".format(end_item.amount|int) }}</td>
+              <td class="bs-note-cell"></td>
+            {% else %}
+              <td class="bs-amount-cell">
+                <div class="yen-input"><span class="yen-prefix">¥</span>
+                  <input type="number" step="1" name="bs_end_amt_{{ item.category }}"
+                         class="form-control form-control-sm no-spin"
+                         value="{{ end_item.amount|int if end_item.amount else 0 }}"></div>
+                {% if item.category == 'Amazon未上場在庫' %}
+                <button type="button" class="btn btn-link btn-sm p-0 mt-1"
+                        style="font-size:0.7rem; line-height:1; text-decoration:none; white-space:nowrap;"
+                        title="期末B/Sの差額（使途不明金）を未上場在庫に吸収する推奨値。Web内データだけから動的に算出。クリックで反映。"
+                        onclick="this.previousElementSibling.querySelector('input').value={{ unlisted_balance_hint|int }};">
+                  💡 差額吸収値 ¥{{ "{:,}".format(unlisted_balance_hint|int) }}
+                </button>
+                {% endif %}
+              </td>
+              <td class="bs-note-cell">
+                <input type="text" name="bs_end_note_{{ item.category }}"
+                       class="form-control form-control-sm" value="{{ end_item.note }}" placeholder="メモ" maxlength="100">
+              </td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% endfor %}
+        <tfoot>
+          <tr class="bs-total">
+            <td><strong>資産合計</strong></td>
+            <td class="bs-amount-cell"><strong>¥{{ "{:,}".format(bs.start.totals.asset|int) }}</strong></td><td></td>
+            <td class="bs-amount-cell"><strong>¥{{ "{:,}".format(bs.end.totals.asset|int) }}</strong></td><td></td>
+          </tr>
+        </tfoot>
+
+        {# ===== 負債・純資産の部 ===== #}
+        <thead><tr class="bs-section-head"><td colspan="5"><strong>負債・純資産の部</strong></td></tr></thead>
+        {% for sec in bs.start.sections if sec.side != 'asset' %}
+        <thead><tr class="bs-subhead"><td colspan="5">【{{ sec.subgroup }}】</td></tr></thead>
+        <tbody>
+          {% for item in sec.entries %}
+          {% set end_item = (bs.end.sections | selectattr('subgroup','equalto',sec.subgroup) | first).entries | selectattr('category','equalto',item.category) | first %}
+          <tr>
+            <td class="bs-cat-cell">
+              {{ item.category }}
+              {% if item.kind == 'auto' %}<span class="badge bg-info ms-1" title="P/Lから連携">自動</span>{% endif %}
+            </td>
+            {% if item.kind == 'auto' %}
+              <td class="bs-amount-cell text-muted">¥{{ "{:,}".format(item.amount|int) }}</td>
+              <td class="bs-note-cell"></td>
+            {% else %}
+              <td class="bs-amount-cell">
+                <div class="yen-input"><span class="yen-prefix">¥</span>
+                  <input type="number" step="1" name="bs_start_amt_{{ item.category }}"
+                         class="form-control form-control-sm no-spin"
+                         value="{{ item.amount|int if item.amount else 0 }}"></div>
+              </td>
+              <td class="bs-note-cell">
+                <input type="text" name="bs_start_note_{{ item.category }}"
+                       class="form-control form-control-sm" value="{{ item.note }}" placeholder="メモ" maxlength="100">
+              </td>
+            {% endif %}
+            {% if end_item.kind == 'auto' %}
+              <td class="bs-amount-cell text-muted">¥{{ "{:,}".format(end_item.amount|int) }}</td>
+              <td class="bs-note-cell"></td>
+            {% else %}
+              <td class="bs-amount-cell">
+                <div class="yen-input"><span class="yen-prefix">¥</span>
+                  <input type="number" step="1" name="bs_end_amt_{{ item.category }}"
+                         class="form-control form-control-sm no-spin"
+                         value="{{ end_item.amount|int if end_item.amount else 0 }}"></div>
+                {% if item.category == 'Amazon未上場在庫' %}
+                <button type="button" class="btn btn-link btn-sm p-0 mt-1"
+                        style="font-size:0.7rem; line-height:1; text-decoration:none; white-space:nowrap;"
+                        title="期末B/Sの差額（使途不明金）を未上場在庫に吸収する推奨値。Web内データだけから動的に算出。クリックで反映。"
+                        onclick="this.previousElementSibling.querySelector('input').value={{ unlisted_balance_hint|int }};">
+                  💡 差額吸収値 ¥{{ "{:,}".format(unlisted_balance_hint|int) }}
+                </button>
+                {% endif %}
+              </td>
+              <td class="bs-note-cell">
+                <input type="text" name="bs_end_note_{{ item.category }}"
+                       class="form-control form-control-sm" value="{{ end_item.note }}" placeholder="メモ" maxlength="100">
+              </td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+        {% endfor %}
+        <tfoot>
+          <tr class="bs-subtotal">
+            <td>負債合計</td>
+            <td class="bs-amount-cell">¥{{ "{:,}".format(bs.start.totals.liability|int) }}</td><td></td>
+            <td class="bs-amount-cell">¥{{ "{:,}".format(bs.end.totals.liability|int) }}</td><td></td>
+          </tr>
+          <tr class="bs-subtotal">
+            <td>純資産合計</td>
+            <td class="bs-amount-cell">¥{{ "{:,}".format(bs.start.totals.equity|int) }}</td><td></td>
+            <td class="bs-amount-cell">¥{{ "{:,}".format(bs.end.totals.equity|int) }}</td><td></td>
+          </tr>
+          <tr class="bs-total">
+            <td><strong>負債・純資産合計</strong></td>
+            <td class="bs-amount-cell"><strong>¥{{ "{:,}".format(bs.start.totals.liability_equity|int) }}</strong></td><td></td>
+            <td class="bs-amount-cell"><strong>¥{{ "{:,}".format(bs.end.totals.liability_equity|int) }}</strong></td><td></td>
+          </tr>
+        </tfoot>
+      </table>
+      <div class="d-flex justify-content-between align-items-center px-3 py-2 small">
+        <div>
+          {% set diff_s = bs.start.totals.balance_diff %}
+          {% set diff_e = bs.end.totals.balance_diff %}
+          <span class="me-3 {% if diff_s != 0 %}text-danger{% else %}text-success{% endif %}">
+            {% if diff_s != 0 %}⚠️ 期首差額: ¥{{ "{:,}".format(diff_s|int) }}{% else %}✓ 期首一致{% endif %}
+          </span>
+          <span class="{% if diff_e != 0 %}text-danger{% else %}text-success{% endif %}">
+            {% if diff_e != 0 %}⚠️ 期末差額: ¥{{ "{:,}".format(diff_e|int) }}{% else %}✓ 期末一致{% endif %}
+          </span>
+        </div>
+        <button class="btn btn-sm btn-outline-primary">💾 保存</button>
+      </div>
+      <p class="small text-muted px-3 pb-2 mb-0">
+        ※ 「自動」項目（棚卸資産・当期純利益）はシステム計算。それ以外は手入力。空欄は 0 扱い。<br>
+        ※ 月セレクタで途中経過もチェック可能。確定申告時は12月末を選択。
+      </p>
+    </div>
+  </form>
+
+  <div class="d-flex gap-2 px-3 pb-3 flex-wrap">
+    <form method="post" action="{{ url_for('bs_copy_from_prev') }}">
+      <input type="hidden" name="year" value="{{ bs.year }}">
+      <button class="btn btn-sm btn-outline-secondary"
+              onclick="return confirm('{{ bs.year - 1 }}年12月末の B/S を {{ bs.year }}年期首にコピーします。既存の期首データは上書きされます。よろしいですか？');">
+        📋 前年12月末を期首にコピー
+      </button>
+    </form>
+    <form method="post" action="{{ url_for('bs_fit_capital') }}">
+      <input type="hidden" name="ym" value="{{ bs.ym_start }}">
+      <input type="hidden" name="label" value="期首({{ bs.year }}年1月1日)">
+      <button class="btn btn-sm btn-outline-warning"
+              onclick="return confirm('期首の元入金を「資産合計 − 負債合計 − 当期純利益等」で自動計算し上書きします。よろしいですか？');">
+        📐 期首 元入金フィット（差額0調整）
+      </button>
+    </form>
+    <form method="post" action="{{ url_for('bs_fit_capital') }}">
+      <input type="hidden" name="ym" value="{{ bs.ym_end }}">
+      <input type="hidden" name="label" value="{{ bs.year }}年{{ bs.month }}月末">
+      <button class="btn btn-sm btn-outline-warning"
+              onclick="return confirm('期末の元入金を自動計算し上書きします。本来期末元入金 = 期首元入金が原則ですが、初回入力時の差額調整に使えます。よろしいですか？');">
+        📐 期末 元入金フィット（差額0調整）
+      </button>
+    </form>
+  </div>
+</div>
+{% endblock %}

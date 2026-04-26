@@ -1,0 +1,313 @@
+"""価格自動調整エンジン（MVP: プリセット5モード + ストッパー）
+
+Phase 1 では DRY RUN のみ（DB に変更候補ログを記録、実際の PATCH は行わない）。
+Phase 2 で実際の価格更新（Listings Items PATCH）に拡張予定。
+"""
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
+
+# amazon-seller-automation の scripts をパスに追加
+_PROJECT_ROOT = Path(__file__).resolve().parent
+_ASA_ROOT = _PROJECT_ROOT.parent / "amazon-seller-automation"
+sys.path.insert(0, str(_ASA_ROOT))
+
+from sp_api.api.listings_items.listings_items_2021_08_01 import (
+    ListingsItemsV20210801,
+)
+from sp_api.base import Marketplaces
+
+from config import MARKETPLACE_ID, SHOP_KEY
+from db import get_db
+
+SHOP = SHOP_KEY
+
+
+def patch_amazon_price(sku: str, new_price: float) -> tuple[bool, str | None]:
+    """SKU の出品価格を Amazon Listings Items API で即時更新。
+    戻り値: (成功, エラーメッセージ)。成功時は listing_price と price_updated_at も DB 更新。"""
+    from scripts.common.sp_api_client import _load_credentials, get_seller_id
+    creds = _load_credentials(SHOP)
+    seller_id = get_seller_id(SHOP)
+    li = ListingsItemsV20210801(credentials=creds, marketplace=Marketplaces.JP)
+
+    # productType 取得（DBキャッシュ or SP-API）
+    product_type = None
+    with get_db() as c:
+        row = c.execute(
+            "SELECT product_type FROM inventory WHERE seller_sku=?", (sku,)
+        ).fetchone()
+        product_type = row["product_type"] if row else None
+    if not product_type:
+        try:
+            rt = li.get_listings_item(
+                sellerId=seller_id, sku=sku,
+                marketplaceIds=MARKETPLACE_ID,
+                includedData=["summaries"],
+            )
+            summaries = (rt.payload or {}).get("summaries", []) or []
+            if summaries:
+                product_type = summaries[0].get("productType")
+            if product_type:
+                with get_db() as c:
+                    c.execute(
+                        "UPDATE inventory SET product_type=? WHERE seller_sku=?",
+                        (product_type, sku),
+                    )
+        except Exception as e:
+            return False, f"productType 取得失敗: {e}"[:200]
+    if not product_type:
+        return False, "productType 不明"
+
+    patch_body = {
+        "productType": product_type,
+        "patches": [{
+            "op": "replace",
+            "path": "/attributes/purchasable_offer",
+            "value": [{
+                "marketplace_id": MARKETPLACE_ID,
+                "currency": "JPY",
+                "our_price": [{"schedule": [{"value_with_tax": float(new_price)}]}]
+            }]
+        }]
+    }
+    try:
+        resp = li.patch_listings_item(
+            sellerId=seller_id, sku=sku,
+            marketplaceIds=MARKETPLACE_ID,
+            body=patch_body,
+        )
+    except Exception as e:
+        return False, str(e)[:300]
+    status = (resp.payload or {}).get("status", "")
+    if status in ("ACCEPTED", "VALID"):
+        with get_db() as c:
+            c.execute(
+                "UPDATE inventory SET listing_price=?, price_updated_at=? "
+                "WHERE seller_sku=?",
+                (float(new_price), datetime.utcnow().isoformat(), sku),
+            )
+            c.execute("""
+                INSERT INTO price_change_log(seller_sku, new_price, reason, executed_at, success, error_message)
+                VALUES(?, ?, 'inline update (UI)', ?, 1, NULL)
+            """, (sku, float(new_price), datetime.utcnow().isoformat()))
+        return True, None
+    issues = (resp.payload or {}).get("issues") or []
+    err = f"status={status} issues={issues[:3]}"[:400]
+    with get_db() as c:
+        c.execute("""
+            INSERT INTO price_change_log(seller_sku, new_price, reason, executed_at, success, error_message)
+            VALUES(?, ?, 'inline update (UI)', ?, 0, ?)
+        """, (sku, float(new_price), datetime.utcnow().isoformat(), err))
+    return False, err
+
+
+def decide_new_price(inventory_row: dict, rule_row: dict) -> tuple[float | None, str]:
+    """SKU の新価格を決定（プリセット5モード + ストッパー）。
+
+    Returns:
+        (new_price, reason) — new_price が None なら変更なし
+    """
+    mode = rule_row.get("mode", "none")
+    if mode in (None, "none", ""):
+        return None, "mode=none"
+
+    current = inventory_row.get("listing_price")
+    if not current:
+        return None, "現価格不明"
+
+    target = None
+    if mode == "fba_condition":
+        # 簡易実装: fba_min を使用（厳密にはコンディション別フィルタが必要）
+        target = inventory_row.get("min_price_fba")
+    elif mode == "all_condition":
+        target = inventory_row.get("min_price_all")
+    elif mode == "fba_min":
+        target = inventory_row.get("min_price_fba")
+    elif mode == "all_min":
+        target = inventory_row.get("min_price_all")
+    elif mode == "cart":
+        target = inventory_row.get("cart_price")
+    else:
+        return None, f"unknown mode: {mode}"
+
+    if not target:
+        return None, "競合データなし"
+
+    target = float(target)
+
+    # ストッパー適用
+    high = rule_row.get("high_stopper")
+    low = rule_row.get("low_stopper")
+    if high and target > float(high):
+        target = float(high)
+    if low and target < float(low):
+        return None, f"赤字ストッパー ({low}) 未満、変更しない"
+
+    # 1円未満の差は変更なし
+    if abs(target - float(current)) < 1:
+        return None, "現価格と同等、変更不要"
+
+    return target, f"mode={mode} target={target}"
+
+
+def run_engine(dry_run: bool = True, apply_updates: bool = False) -> dict:
+    """全 SKU の価格調整判定を実行。
+
+    dry_run=True: 判定のみ（DB ログ、SP-API は叩かない）
+    apply_updates=True: 実際に SP-API PATCH で価格更新
+    """
+    result = {
+        "started_at": datetime.utcnow().isoformat(),
+        "evaluated": 0,
+        "would_change": 0,
+        "changed": 0,
+        "errors": 0,
+        "details": [],
+    }
+
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT inv.*, pr.mode, pr.high_stopper, pr.low_stopper, pr.active,
+                   cp.cost_price
+            FROM price_rules pr
+            JOIN inventory inv ON inv.seller_sku = pr.seller_sku
+            LEFT JOIN cost_prices cp ON cp.seller_sku = inv.seller_sku
+            WHERE pr.active = 1
+              AND pr.mode IS NOT NULL AND pr.mode != 'none'
+              AND inv.status LIKE 'Active%'
+              AND inv.quantity > 0
+        """).fetchall()
+
+    li_client = None
+    for r in rows:
+        result["evaluated"] += 1
+        inv = dict(r)
+        rule = {
+            "mode": r["mode"],
+            "high_stopper": r["high_stopper"],
+            "low_stopper": r["low_stopper"] or r["cost_price"],  # 赤字ストッパー未指定なら仕入値
+        }
+        new_price, reason = decide_new_price(inv, rule)
+
+        if new_price is None:
+            continue
+        result["would_change"] += 1
+
+        if dry_run and not apply_updates:
+            # DB にログのみ
+            with get_db() as conn:
+                conn.execute("""
+                    INSERT INTO price_change_log(seller_sku, old_price, new_price,
+                                                 reason, executed_at, success, error_message)
+                    VALUES(?,?,?,?,?,0,'DRY_RUN')
+                """, (r["seller_sku"], r["listing_price"], new_price,
+                      reason, datetime.utcnow().isoformat()))
+            result["details"].append({
+                "sku": r["seller_sku"],
+                "old": r["listing_price"],
+                "new": new_price,
+                "reason": reason,
+                "dry_run": True,
+            })
+            continue
+
+        # 実行モード: Listings Items PATCH
+        if li_client is None:
+            from scripts.common.sp_api_client import _load_credentials, get_seller_id
+            creds = _load_credentials(SHOP)
+            seller_id = get_seller_id(SHOP)
+            li_client = (ListingsItemsV20210801(credentials=creds, marketplace=Marketplaces.JP),
+                         seller_id)
+        li, seller_id = li_client
+
+        # productType を取得（無ければ SP-API から取って保存）
+        product_type = r["product_type"] if "product_type" in r.keys() else None
+        if not product_type:
+            try:
+                rt = li.get_listings_item(
+                    sellerId=seller_id, sku=r["seller_sku"],
+                    marketplaceIds=MARKETPLACE_ID,
+                    includedData=["summaries"],
+                )
+                summaries = (rt.payload or {}).get("summaries", []) or []
+                if summaries:
+                    product_type = summaries[0].get("productType")
+                if product_type:
+                    with get_db() as c:
+                        c.execute(
+                            "UPDATE inventory SET product_type=? WHERE seller_sku=?",
+                            (product_type, r["seller_sku"]),
+                        )
+            except Exception:
+                product_type = None
+
+        try:
+            if not product_type:
+                raise RuntimeError("productType unknown")
+            # Listings Items 2021-08-01 PATCH: purchasable_offer 差し替え
+            patch_body = {
+                "productType": product_type,
+                "patches": [{
+                    "op": "replace",
+                    "path": "/attributes/purchasable_offer",
+                    "value": [{
+                        "marketplace_id": MARKETPLACE_ID,
+                        "currency": "JPY",
+                        "our_price": [{
+                            "schedule": [{"value_with_tax": float(new_price)}]
+                        }]
+                    }]
+                }]
+            }
+            resp = li.patch_listings_item(
+                sellerId=seller_id, sku=r["seller_sku"],
+                marketplaceIds=MARKETPLACE_ID,
+                body=patch_body,
+            )
+            status = (resp.payload or {}).get("status", "")
+            if status in ("ACCEPTED", "VALID"):
+                success = 1
+                err = None
+                # DB 側の listing_price も即時更新
+                with get_db() as c:
+                    c.execute(
+                        "UPDATE inventory SET listing_price=?, price_updated_at=? "
+                        "WHERE seller_sku=?",
+                        (float(new_price), datetime.utcnow().isoformat(), r["seller_sku"]),
+                    )
+                result["changed"] += 1
+            else:
+                success = 0
+                err = f"status={status}, issues={((resp.payload or {}).get('issues') or [])[:3]}"[:400]
+                result["errors"] += 1
+        except Exception as e:
+            success = 0
+            err = str(e)[:400]
+            result["errors"] += 1
+
+        with get_db() as conn:
+            conn.execute("""
+                INSERT INTO price_change_log(seller_sku, old_price, new_price,
+                                             reason, executed_at, success, error_message)
+                VALUES(?,?,?,?,?,?,?)
+            """, (r["seller_sku"], r["listing_price"], new_price, reason,
+                  datetime.utcnow().isoformat(), success, err))
+
+        result["details"].append({
+            "sku": r["seller_sku"],
+            "old": r["listing_price"],
+            "new": new_price,
+            "reason": reason,
+            "success": success,
+            "error": err,
+        })
+
+    result["finished_at"] = datetime.utcnow().isoformat()
+    return result
+
+
+if __name__ == "__main__":
+    r = run_engine(dry_run=True)
+    print(json.dumps(r, ensure_ascii=False, indent=2))

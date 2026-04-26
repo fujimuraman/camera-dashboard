@@ -1,0 +1,496 @@
+/* fuji-dashboard — Apple 風デザイン */
+:root {
+  --bg: #f5f5f7;
+  --bg-card: #ffffff;
+  --fg: #1d1d1f;
+  --fg-muted: #6e6e73;
+  --primary: #0071e3;
+  --primary-hover: #0077ed;
+  --success: #28a745;
+  --danger: #ff3b30;
+  --warning: #ff9500;
+  --border: #d2d2d7;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.08);
+  --radius: 12px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+               "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic Medium",
+               "Yu Gothic", Meiryo, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+  font-weight: 400;
+}
+
+/* ナビゲーション - ダーク系Apple風 */
+.navbar-dark {
+  background: rgba(22, 22, 23, 0.92) !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.navbar-brand {
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.navbar .nav-link {
+  font-size: 0.9rem;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+.navbar .nav-link:hover { opacity: 1; }
+
+/* カード - 柔らかい影と丸み */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s;
+}
+.card:hover { box-shadow: var(--shadow-md); }
+.card-header {
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+}
+
+/* ダッシュボードの数字カード */
+.card.text-bg-primary,
+.card.text-bg-success,
+.card.text-bg-warning,
+.card.text-bg-danger {
+  border: none;
+  box-shadow: var(--shadow-md);
+}
+.card.text-bg-primary { background: linear-gradient(135deg, #0071e3, #005bb5) !important; }
+.card.text-bg-success { background: linear-gradient(135deg, #34c759, #28a745) !important; }
+.card.text-bg-warning { background: linear-gradient(135deg, #ff9f0a, #ff9500) !important; color: white !important; }
+.card.text-bg-danger { background: linear-gradient(135deg, #ff453a, #ff3b30) !important; }
+
+/* ダッシュボード KPI カード（グラフ色と一致） */
+.dash-card { border: none; box-shadow: var(--shadow-md); color: #fff; }
+.dash-card .card-subtitle { opacity: 0.9; font-size: 0.85rem; }
+.dash-card h3 { font-weight: 600; margin: 0; }
+/* 日次売上（青）*/
+.dash-sales   { background: linear-gradient(135deg, #0071e3, #005bb5); }
+/* 販売数（橙）*/
+.dash-qty     { background: linear-gradient(135deg, #ff9f0a, #ff9500); }
+/* 仕入額（赤）*/
+.dash-cost    { background: linear-gradient(135deg, #ff453a, #cc2e25); }
+/* 利益額（緑）*/
+.dash-profit  { background: linear-gradient(135deg, #34c759, #1f9a4a); }
+/* 返品（濃赤）*/
+.dash-returns { background: linear-gradient(135deg, #8b2c20, #6b1f16); }
+/* 在庫数（紫）*/
+.dash-inventory { background: linear-gradient(135deg, #af52de, #8e3fc1); }
+
+/* ボタン - Apple 風 */
+.btn {
+  border-radius: 8px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: all 0.15s;
+}
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.btn-primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  transform: translateY(-1px);
+}
+.btn-sm { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
+
+/* テーブル */
+.table {
+  --bs-table-bg: var(--bg-card);
+  font-size: 0.9rem;
+}
+.table thead th {
+  background: #fafafa;
+  border-bottom: 1px solid var(--border) !important;
+  font-weight: 500;
+  color: var(--fg-muted);
+  text-transform: none;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  padding: 0.6rem 0.5rem;
+}
+.table tbody td {
+  padding: 0.5rem;
+  border-top: 1px solid #f0f0f2;
+  vertical-align: middle;
+}
+.table-hover tbody tr:hover {
+  background: #f9f9fb;
+}
+
+/* 在庫画面 商品画像サムネイル */
+.inv-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: white;
+}
+.inv-thumb-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  border: 1px dashed var(--border);
+  color: var(--fg-muted);
+  font-size: 0.7rem;
+}
+
+/* ¥ プレフィックス付き数値入力 */
+.yen-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  justify-content: flex-end;
+}
+.yen-input .yen-prefix {
+  color: var(--fg-muted);
+  font-size: 0.85rem;
+  padding-right: 2px;
+}
+.yen-input .form-control {
+  max-width: 90px;
+  text-align: right;
+}
+/* 桁数指定入力（7桁=出品価格/仕入れ、5桁=ストッパー）*/
+.yen-input .inp-7 { max-width: 85px; min-width: 70px; }
+.yen-input .inp-5 { max-width: 72px; min-width: 62px; }
+
+/* 最低価格列: 1文字分広めに */
+.min-price-td { min-width: 84px; white-space: nowrap; }
+/* 最低価格ツールチップ（Pricetar 風） */
+.min-price-cell { cursor: default; }
+.min-price-cell.has-offers { cursor: help; border-bottom: 1px dotted #999; }
+
+/* 追従モードのフォント小さく */
+select.inv-inline { font-size: 0.78rem; }
+
+/* カート獲得バッジ */
+.cart-badge {
+  display: inline-block;
+  background: #ffa000;
+  color: #fff;
+  font-size: 0.65rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 3px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.offer-popup {
+  position: absolute;
+  z-index: 1000;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  padding: 0;
+  max-width: 520px;
+  font-size: 0.85rem;
+}
+.offer-popup-head {
+  background: #f6f2ec;
+  padding: 4px 10px;
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
+}
+.offer-table { width: 100%; margin: 0; }
+.offer-table th {
+  background: #fce9da;
+  color: #5a3a20;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  border-bottom: 1px solid #f0d8c0;
+}
+.offer-table td { padding: 3px 8px; border-top: 1px solid #f3f3f5; }
+
+/* Keepa 画像アイコン */
+.keepa-icon {
+  width: 24px; height: 24px;
+  border-radius: 6px;
+  opacity: 0.9;
+  transition: opacity .15s, transform .15s;
+}
+.keepa-icon:hover { opacity: 1; transform: scale(1.1); }
+
+/* 数値入力のスピナーを非表示 */
+.no-spin {
+  -moz-appearance: textfield;
+}
+.no-spin::-webkit-outer-spin-button,
+.no-spin::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* 同コンディション最安値からしきい値以上乖離 */
+.price-diverged {
+  color: var(--primary) !important;
+  font-weight: 600;
+}
+
+/* 警告バナーから SKU クリック時の行ハイライト */
+.row-highlight {
+  animation: row-flash 2.4s ease-out;
+}
+@keyframes row-flash {
+  0%   { background: #fff3cd; }
+  50%  { background: #ffe69c; }
+  100% { background: transparent; }
+}
+.missing-sku-link { font-family: var(--bs-font-monospace); font-size: 0.78rem; cursor: pointer; }
+.missing-sku-link:hover { background: #fff3cd !important; }
+
+/* 上下2段表示セル（出品数/販売数 など）*/
+.stacked-cell { line-height: 1.25; }
+.stacked-cell > div + div {
+  border-top: 1px dashed #e5e5ea;
+  padding-top: 2px;
+  margin-top: 2px;
+}
+
+/* 注文一覧 手数料セル（合計/Amazon/代行 の3段）
+   左=確/推バッジ、中=ラベル、右=金額（金額は右揃え固定）*/
+.fee-cell { line-height: 1.3; min-width: 165px; }
+.fee-cell .fee-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 4px;
+}
+.fee-cell .fee-row + .fee-row { margin-top: 1px; }
+.fee-cell .fee-prefix {
+  text-align: center;
+  font-size: 0.7rem;
+}
+.fee-cell .fee-label {
+  text-align: left;
+  font-size: 0.78rem;
+}
+.fee-cell .fee-amount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.fee-cell .badge {
+  font-size: 0.65rem;
+  padding: 1px 4px;
+}
+
+/* 保存中スピナー（インライン編集） */
+.inv-inline.saving {
+  background: linear-gradient(90deg, #fff 33%, #eef6ff 50%, #fff 67%);
+  background-size: 200% 100%;
+  animation: inv-save-shimmer 1.2s linear infinite;
+}
+@keyframes inv-save-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+/* ソート可視化（▲▼） */
+thead th[data-sort] {
+  position: relative;
+  user-select: none;
+}
+/* title 付きヘッダはホバーで判別しやすく */
+thead th[data-sort][title] {
+  text-decoration: underline dotted rgba(0,0,0,0.15);
+  text-underline-offset: 3px;
+}
+thead th[data-sort]::after {
+  content: "";
+  display: inline-block;
+  margin-left: 4px;
+  opacity: 0.25;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 5px solid var(--fg-muted);
+  vertical-align: middle;
+}
+thead th.sort-asc,
+thead th.sort-desc {
+  color: var(--primary);
+}
+thead th.sort-asc::after {
+  opacity: 1;
+  border-bottom: 5px solid var(--primary);
+}
+thead th.sort-desc::after {
+  opacity: 1;
+  border-top: 5px solid var(--primary);
+  border-bottom: none;
+}
+
+/* フォーム要素 */
+.form-control, .form-select {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 0.9rem;
+  transition: all 0.15s;
+}
+.form-control:focus, .form-select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.15);
+}
+.form-control.is-valid {
+  border-color: var(--success) !important;
+  background-image: none;
+}
+.form-control.is-invalid {
+  border-color: var(--danger) !important;
+  background-image: none;
+}
+
+/* コード表示 */
+code {
+  font-size: 0.85em;
+  color: #d63384;
+  background: #faf4f8;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* バッジ */
+.badge { font-weight: 500; letter-spacing: 0.02em; }
+
+/* 見出し */
+h2 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+h3, h4 {
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* リンク */
+a {
+  color: var(--primary);
+  text-decoration: none;
+}
+a:hover { text-decoration: underline; }
+
+/* アラート */
+.alert { border-radius: var(--radius); border: none; }
+
+/* 貸借対照表 (B/S) */
+.bs-table td { padding: 0.3rem 0.5rem; vertical-align: middle; }
+.bs-cat-cell { min-width: 130px; }
+.bs-table .bs-section-head td {
+  background: #fff5e6;
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+  border-top: 2px solid #b88a4a;
+}
+.bs-table .bs-subhead td {
+  background: #f3eee5;
+  font-weight: 500;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.5rem;
+  border-top: 1px solid #d8c3a8;
+}
+.bs-table .bs-subtotal td {
+  background: #fafafa;
+  border-top: 1px solid #d8c3a8;
+  font-size: 0.9rem;
+}
+.bs-table .bs-total td {
+  background: #fff5e6;
+  border-top: 2px solid #b88a4a;
+  font-size: 1.0rem;
+}
+.bs-amount-cell { text-align: right; width: 130px; font-variant-numeric: tabular-nums; }
+.bs-note-cell { min-width: 220px; }
+.bs-note-cell input.form-control { width: 100%; }
+.bs-readonly { color: #555; }
+.bs-table input.form-control { text-align: right; }
+.bs-table .bs-note-cell input.form-control { text-align: left; }
+/* 期首/期末を視覚的に分離 */
+.bs-period-start { background-color: rgba(86, 156, 214, 0.08) !important; }
+.bs-period-end   { background-color: rgba(212, 159, 75, 0.10) !important; }
+.bs-table tbody td:nth-child(2), .bs-table tbody td:nth-child(3) { background-color: rgba(86, 156, 214, 0.04); }
+.bs-table tbody td:nth-child(4), .bs-table tbody td:nth-child(5) { background-color: rgba(212, 159, 75, 0.05); }
+.bs-table tfoot td:nth-child(2), .bs-table tfoot td:nth-child(3) { background-color: rgba(86, 156, 214, 0.10); }
+.bs-table tfoot td:nth-child(4), .bs-table tfoot td:nth-child(5) { background-color: rgba(212, 159, 75, 0.12); }
+.bs-col-left { border-right: 1px solid var(--border); }
+@media (max-width: 768px) {
+  .bs-col-left { border-right: none; border-bottom: 2px solid var(--border); }
+}
+
+/* 損益計算書 (P/L) */
+.pl-table td { padding: 0.4rem 0.75rem; vertical-align: middle; }
+.pl-table .pl-section td {
+  background: #f8f3ed;
+  border-top: 2px solid #d8c3a8;
+  padding: 0.55rem 0.75rem;
+}
+.pl-table .pl-subtotal td {
+  border-top: 1px solid #d8c3a8;
+  background: #fafafa;
+}
+.pl-table .pl-total td {
+  background: #fff5e6;
+  border-top: 2px solid #d8c3a8;
+  border-bottom: 2px solid #d8c3a8;
+}
+.pl-table .pl-grandtotal td {
+  background: #fff0d4;
+  border-top: 3px double #b88a4a;
+  font-size: 1.05rem;
+}
+.pl-table tbody tr td:nth-child(2),
+.pl-table tbody tr td:nth-child(3) {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  width: 140px;
+}
+
+/* プライスター風 KPI テーブル */
+.kpi-card .card-header {
+  background: #3a2a1f;
+  color: #fff;
+  font-weight: 500;
+}
+.kpi-table thead tr {
+  background: #fce9da;
+}
+.kpi-table thead th {
+  text-align: center;
+  color: #5a3a20;
+  font-size: 0.8rem;
+  border-bottom: 1px solid #f0d8c0 !important;
+}
+.kpi-table tbody td {
+  text-align: center;
+  font-size: 1.05rem;
+  padding: 0.75rem 0.5rem;
+  border-top: 1px solid #f0d8c0;
+}
+
+/* レスポンシブ */
+@media (max-width: 768px) {
+  h2 { font-size: 1.3rem; }
+  .table { font-size: 0.82rem; }
+  .navbar-brand { font-size: 1rem; }
+  .card-body { padding: 1rem; }
+}
+
+/* 数字を見やすく */
+.text-end { font-variant-numeric: tabular-nums; }

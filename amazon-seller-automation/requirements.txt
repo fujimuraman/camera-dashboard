@@ -1,0 +1,4 @@
+python-amazon-sp-api
+gspread
+google-auth
+python-dotenv

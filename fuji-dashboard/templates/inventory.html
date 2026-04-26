@@ -1,0 +1,340 @@
+{% extends "base.html" %}
+{% block title %}在庫一覧{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">📦 在庫一覧 <small class="text-muted">{{ inventory|length }}件（在庫あり）</small></h2>
+  <div>
+    <input type="search" id="invSearch" class="form-control form-control-sm d-inline-block" style="max-width:220px" placeholder="SKU / ASIN / 商品名">
+  </div>
+</div>
+
+{% if missing_cost_skus %}
+<div class="alert alert-warning d-flex align-items-start gap-2 py-2 small">
+  <span style="font-size:1.1rem">⚠️</span>
+  <div class="flex-grow-1">
+    <strong>仕入れ値が未記入の SKU が {{ missing_cost_skus|length }} 件あります。</strong>
+    仕入れ台帳にこれらの SKU を登録するか、在庫一覧の「仕入値」欄に直接入力してください。
+    <details class="mt-1">
+      <summary class="text-decoration-underline" style="cursor:pointer">該当 SKU を表示</summary>
+      <div class="mt-1 d-flex flex-wrap gap-1">
+        {% for sku in missing_cost_skus %}
+        <a href="#row-{{ sku }}" class="missing-sku-link badge bg-light text-dark border" data-sku="{{ sku }}">{{ sku }}</a>
+        {% endfor %}
+      </div>
+    </details>
+  </div>
+  <form method="post" action="{{ url_for('sync_cost_prices_now') }}">
+    <button class="btn btn-outline-warning btn-sm" type="submit"
+            title="仕入れ台帳を読み直して cost_prices を再同期します">🔄 仕入値反映</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="table-responsive">
+  <table class="table table-sm table-hover inv-table" id="invTable">
+    <thead class="table-light">
+      <tr>
+        <th data-sort title="商品の代表画像（Amazon Catalog より自動取得）">画像</th>
+        <th data-sort data-type="date" title="この ASIN を Amazon に出品した日（出品開始日）">登録日</th>
+        <th data-sort data-type="date" title="出品価格を最後に変更した日">更新日</th>
+        <th data-sort title="Amazon ASIN（クリックで商品ページへ）">ASIN</th>
+        <th data-sort title="SKU と商品名">SKU / 商品名</th>
+        <th data-sort data-type="cond" title="出品コンディション（新品〜可）。クリックで状態順ソート">状態</th>
+        <th data-sort data-type="num" class="text-end" title="現在の Amazon 出品価格（編集→ 設定の反映方式に従い即時 or「価格更新」ボタンで Amazon へ PATCH）">出品価格</th>
+        <th data-sort data-type="num" class="text-end" title="表示優先: ① カート価格 🛒 ② 「良い」以上の最安値（可は除外）。ホバーで全出品の一覧">最低価格</th>
+        <th data-sort data-type="num" class="text-end" title="上段=出品数 (同コンディション/全体)、下段=販売数 (自分の累計/Keepa推定の過去90日全体)。Keepa側はAPI key設定後に表示">出品数<br>販売数</th>
+        <th data-sort title="価格自動調整のルール。15分ごとに評価し、設定で有効化されていれば Amazon に反映">追従モード</th>
+        <th data-sort data-type="num" class="text-end" title="ストッパー（上限/下限）。追従モードで決まる新価格を、高値で頭打ち・赤字未満なら据え置き">
+          <span class="text-primary">高値</span><br><span class="text-danger">赤字</span>
+        </th>
+        <th data-sort data-type="num" class="text-end" title="商品の原価（仕入れ台帳の K列より）。手動編集も可、次の台帳同期で上書きされる場合あり">仕入値</th>
+        <th data-sort data-type="num" class="text-end" title="手数料 = Amazon手数料（過去実売の確定値があればその平均、無ければレンズ=10% / カメラ=8% で推定）+ 発送代行手数料（1商品あたり）">手数料</th>
+        <th data-sort data-type="num" class="text-end" title="粗利益 = 出品価格 − 手数料 − 仕入値 ／ 利益率 = 粗利益 ÷ 出品価格">粗利益<br>利益率</th>
+        <th title="Keepa（外部サイト）で価格推移グラフを開く">Keepa</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in inventory %}
+      {% set fee = (r._amazon_fee or 0) + (r.shipping_agent_per_item or 0) %}
+      <tr data-sku="{{ r.seller_sku }}" id="row-{{ r.seller_sku }}">
+        <td>
+          {% if r.main_image_url %}
+          <img src="{{ r.main_image_url }}" class="inv-thumb" alt="" loading="lazy">
+          {% else %}
+          <span class="inv-thumb-placeholder" title="画像未取得">—</span>
+          {% endif %}
+        </td>
+        <td><small>{{ r.asin_listed_at[:10] if r.asin_listed_at else '' }}</small></td>
+        <td><small>{{ r.price_updated_at[:10] if r.price_updated_at else '' }}</small></td>
+        <td>
+          {% if r._amazon_url %}
+          <a href="{{ r._amazon_url }}" target="_blank" title="{{ r.asin }}">
+            <small>{{ r.asin }}</small>
+          </a>
+          {% else %}<small>{{ r.asin }}</small>{% endif %}
+        </td>
+        <td>
+          <code>{{ r.seller_sku }}</code>{% if r.has_cart %}<span class="cart-badge" title="カート獲得中">カート</span>{% endif %}
+          <div class="text-muted small">
+            {% if r._amazon_url %}
+            <a href="{{ r._amazon_url }}" target="_blank" class="text-decoration-none text-muted">
+              {{ (r.title or '')[:50] }}
+            </a>
+            {% else %}{{ (r.title or '')[:50] }}{% endif %}
+          </div>
+        </td>
+        <td data-sort-value="{{ r._condition_order }}"><small>{{ r._condition_jp }}</small></td>
+        <td class="text-end">
+          <div class="yen-input">
+            <span class="yen-prefix">¥</span>
+            <input type="text" inputmode="numeric" pattern="[0-9]*"
+                   class="form-control form-control-sm inv-inline inv-price no-spin inp-7 {% if r._price_diverged %}price-diverged{% endif %}"
+                   data-field="listing_price"
+                   {% if r._price_diverged and r._same_cond_min %}title="同コンディション最安値 ¥{{ '{:,}'.format(r._same_cond_min|int) }} から {{ '{:,}'.format((r.listing_price - r._same_cond_min)|int) }} 円離れています"{% endif %}
+                   value="{{ r.listing_price|int if r.listing_price else '' }}">
+          </div>
+        </td>
+        <td class="text-end min-price-td">
+          {% if r._display_min %}
+          <span class="min-price-cell {% if r.offers_json %}has-offers{% endif %}"
+                data-offers='{{ r.offers_json or "" }}'
+                data-sku="{{ r.seller_sku }}"
+                title="{% if r._min_source == 'cart' %}カート価格{% else %}良い以上の最安値{% endif %}">¥{{ "{:,}".format(r._display_min|int) }}{% if r._min_source == 'cart' %}<small class="text-success">🛒</small>{% endif %}</span>
+          {% else %}<span class="text-muted">-</span>{% endif %}
+        </td>
+        <td class="text-end stacked-cell" data-sort-value="{{ r.asin_sold_count or 0 }}"
+            title="{% if r.asin_last_sold %}最終販売日: {{ r.asin_last_sold }}{% endif %}{% if r.keepa_updated_at %} / Keepa取得: {{ r.keepa_updated_at[:10] }}{% endif %}">
+          {% if r._offer_count %}
+            <div><strong>{{ r._offer_count_same }}</strong><small class="text-muted"> / {{ r._offer_count }}</small></div>
+          {% else %}<div><span class="text-muted">-</span></div>{% endif %}
+          <div>
+            {% if r.asin_sold_count and r.asin_sold_count > 0 %}
+              <strong>{{ r.asin_sold_count }}</strong>
+            {% else %}<span class="text-muted">0</span>{% endif %}
+            <small class="text-muted"> /
+              {% if r.keepa_sales_90d is not none %}{{ r.keepa_sales_90d }}{% else %}—{% endif %}
+            </small>
+          </div>
+        </td>
+        <td>
+          <select class="form-select form-select-sm inv-inline" data-field="mode" style="max-width:130px">
+            {% for mv, ml in [('none','しない'),('fba_condition','FBA状態合わせ'),('all_condition','状態合わせ'),('fba_min','FBA最安値'),('all_min','最安値'),('cart','カート価格')] %}
+            <option value="{{ mv }}" {% if r.mode == mv %}selected{% endif %}>{{ ml }}</option>
+            {% endfor %}
+          </select>
+        </td>
+        <td class="text-end" data-sort-value="{{ r.high_stopper or 0 }}">
+          <div class="yen-input mb-1">
+            <span class="yen-prefix">¥</span>
+            <input type="text" inputmode="numeric" pattern="[0-9]*"
+                   class="form-control form-control-sm inv-inline no-spin inp-5 text-primary"
+                   data-field="high_stopper"
+                   value="{{ r.high_stopper|int if r.high_stopper else 0 }}"
+                   title="高値ストッパー">
+          </div>
+          <div class="yen-input">
+            <span class="yen-prefix">¥</span>
+            <input type="text" inputmode="numeric" pattern="[0-9]*"
+                   class="form-control form-control-sm inv-inline no-spin inp-5 text-danger"
+                   data-field="low_stopper"
+                   value="{{ r.low_stopper|int if r.low_stopper else 0 }}"
+                   title="赤字ストッパー">
+          </div>
+        </td>
+        <td class="text-end">
+          <div class="yen-input">
+            <span class="yen-prefix">¥</span>
+            <input type="text" inputmode="numeric" pattern="[0-9]*"
+                   class="form-control form-control-sm inv-inline no-spin inp-7"
+                   data-field="cost_price"
+                   value="{{ r.cost_price|int if r.cost_price else '' }}">
+          </div>
+        </td>
+        <td class="text-end" data-sort-value="{{ fee|int }}">
+          {% if fee %}
+          <small class="text-muted"
+                 title="Amazon手数料 ¥{{ '{:,}'.format(r._amazon_fee|int) }} ({{ r._amazon_fee_source }}) + 発送代行 ¥{{ '{:,}'.format(r.shipping_agent_per_item|int) if r.shipping_agent_per_item else 0 }}">¥{{ "{:,}".format(fee|int) }}</small>
+          {% else %}<span class="text-muted">-</span>{% endif %}
+        </td>
+        <td class="text-end">
+          <span class="{% if r._profit > 0 %}text-success{% else %}text-danger{% endif %}">
+            ¥{{ "{:,}".format(r._profit|int) }}
+          </span><br>
+          <small class="text-muted">{{ "%.1f"|format(r._profit_rate) }}%</small>
+        </td>
+        <td class="text-center">
+          {% if r._keepa_url %}
+          <a href="{{ r._keepa_url }}" target="_blank" title="Keepa で見る">
+            <img src="{{ url_for('static', filename='img/keepa.svg') }}" class="keepa-icon" alt="Keepa">
+          </a>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="15" class="text-muted text-center py-4">在庫データがありません。「⟳ 全同期」で取得してください。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ---- インライン編集（自動送信、価格系は数字のみ許容）----
+document.querySelectorAll('.inv-inline').forEach(el => {
+  // 数値入力欄は不要文字を除去
+  if (el.classList.contains('no-spin') && el.type === 'text') {
+    el.addEventListener('input', () => {
+      el.value = el.value.replace(/[^0-9]/g, '');
+    });
+  }
+  el.addEventListener('change', async () => {
+    const sku = el.closest('tr').dataset.sku;
+    const field = el.dataset.field;
+    const value = el.value;
+    // 保存中の視覚フィードバック
+    el.classList.remove('is-valid', 'is-invalid');
+    el.classList.add('saving');
+    try {
+      const r = await fetch(`/inventory/${encodeURIComponent(sku)}/update`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({field, value})
+      });
+      el.classList.remove('saving');
+      if (r.ok) {
+        el.classList.add('is-valid');
+        setTimeout(() => el.classList.remove('is-valid'), 1500);
+      } else {
+        const body = await r.json().catch(() => ({}));
+        el.classList.add('is-invalid');
+        alert(body.error || `エラー: HTTP ${r.status}`);
+      }
+    } catch (e) {
+      el.classList.remove('saving');
+      el.classList.add('is-invalid');
+      alert('通信エラー: ' + e);
+    }
+  });
+});
+
+// ---- 最低価格ホバーで出品一覧ポップアップ（Pricetar/Keepa 風）----
+const offerPop = document.createElement('div');
+offerPop.className = 'offer-popup d-none';
+document.body.appendChild(offerPop);
+const condJP = {
+  new: '新品', like_new: 'ほぼ新品', very_good: '非常に良い',
+  good: '良い', acceptable: '可'
+};
+function renderOffers(offers) {
+  if (!offers || !offers.length) return '<div class="text-muted p-2">出品なし</div>';
+  const rows = offers.map(o => `
+    <tr>
+      <td class="text-end">¥${(o.price||0).toLocaleString()}</td>
+      <td class="text-end">${o.shipping ? '¥' + o.shipping.toLocaleString() : 0}</td>
+      <td class="text-end">${o.points || 0}</td>
+      <td class="text-end fw-bold ${o.is_cart ? 'text-success' : ''}">¥${(o.total||0).toLocaleString()}</td>
+      <td>${condJP[o.sub_condition] || o.sub_condition || '-'}</td>
+      <td>${o.fulfillment}${o.is_cart ? ' 🛒' : ''}</td>
+    </tr>`).join('');
+  return `<div class="offer-popup-head">最新のデータ（合計の安い順）</div>
+    <table class="offer-table"><thead><tr>
+      <th>価格</th><th>送料</th><th>ポイント</th><th>合計</th><th>状態</th><th>出品者</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+document.querySelectorAll('.min-price-cell').forEach(el => {
+  el.addEventListener('mouseenter', () => {
+    const raw = el.dataset.offers;
+    if (!raw) return;
+    let offers;
+    try { offers = JSON.parse(raw); } catch { return; }
+    offerPop.innerHTML = renderOffers(offers);
+    offerPop.classList.remove('d-none');
+    const rect = el.getBoundingClientRect();
+    const top = rect.bottom + window.scrollY + 4;
+    let left = rect.left + window.scrollX - 200;
+    // 画面端からの調整
+    const max = window.innerWidth - 520;
+    if (left > max) left = max;
+    if (left < 10) left = 10;
+    offerPop.style.top = top + 'px';
+    offerPop.style.left = left + 'px';
+  });
+  el.addEventListener('mouseleave', () => offerPop.classList.add('d-none'));
+});
+
+// ---- 警告バナーの SKU リンクをクリック → 該当行にスクロール＆ハイライト ----
+document.querySelectorAll('.missing-sku-link').forEach(a => {
+  a.addEventListener('click', (e) => {
+    const sku = a.dataset.sku;
+    const tr = document.getElementById('row-' + sku);
+    if (tr) {
+      e.preventDefault();
+      tr.scrollIntoView({behavior: 'smooth', block: 'center'});
+      tr.classList.add('row-highlight');
+      setTimeout(() => tr.classList.remove('row-highlight'), 2400);
+    }
+  });
+});
+
+// ---- 検索フィルタ ----
+document.getElementById('invSearch')?.addEventListener('input', (e) => {
+  const q = e.target.value.toLowerCase();
+  document.querySelectorAll('#invTable tbody tr').forEach(tr => {
+    const text = tr.innerText.toLowerCase();
+    tr.style.display = text.includes(q) ? '' : 'none';
+  });
+});
+
+// ---- ソート（▲▼表示付き・タイプ別）----
+const sortState = { idx: null, asc: true };
+function parseCell(td, type) {
+  // 優先: data-sort-value があればそれを使う（状態カスタム順など）
+  if (td.dataset && td.dataset.sortValue !== undefined) {
+    const v = td.dataset.sortValue;
+    const n = parseFloat(v);
+    return isNaN(n) ? v : n;
+  }
+  // 入力欄がある場合は value を見る（￥プレフィックス付き数値入力対策）
+  const inp = td.querySelector('input, select');
+  const raw = inp ? (inp.value || '').trim() : td.innerText.trim();
+  if (type === 'num') {
+    const n = parseFloat(raw.replace(/[¥,\s%]/g, ''));
+    return isNaN(n) ? -Infinity : n;
+  }
+  if (type === 'date') {
+    const d = Date.parse(raw);
+    return isNaN(d) ? -Infinity : d;
+  }
+  if (type === 'cond') {
+    // data-sort-value が無い場合のフォールバック
+    return raw;
+  }
+  return raw;
+}
+function applySort(idx, type) {
+  const tbody = document.querySelector('#invTable tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const asc = sortState.idx === idx ? !sortState.asc : true;
+  rows.sort((a, b) => {
+    const av = parseCell(a.cells[idx], type);
+    const bv = parseCell(b.cells[idx], type);
+    if (typeof av === 'number' && typeof bv === 'number') {
+      return asc ? av - bv : bv - av;
+    }
+    return asc ? String(av).localeCompare(String(bv), 'ja') : String(bv).localeCompare(String(av), 'ja');
+  });
+  rows.forEach(r => tbody.appendChild(r));
+  sortState.idx = idx; sortState.asc = asc;
+  // ソート記号を全ヘッダから除去→現在列にのみ付与
+  document.querySelectorAll('#invTable th[data-sort]').forEach((th, i) => {
+    th.classList.remove('sort-asc', 'sort-desc');
+    if (i === idx) th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+  });
+}
+document.querySelectorAll('#invTable th[data-sort]').forEach((th, idx) => {
+  th.style.cursor = 'pointer';
+  th.addEventListener('click', () => applySort(idx, th.dataset.type || 'text'));
+});
+</script>
+{% endblock %}

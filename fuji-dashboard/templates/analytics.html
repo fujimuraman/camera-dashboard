@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}売上分析{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">📈 売上分析</h2>
+  <form class="d-flex gap-2" method="get" id="periodForm">
+    <select name="preset" class="form-select form-select-sm" onchange="this.form.submit()">
+      <option value="this" {% if preset=='this' %}selected{% endif %}>当月</option>
+      <option value="prev" {% if preset=='prev' %}selected{% endif %}>前月</option>
+      <option value="year" {% if preset=='year' %}selected{% endif %}>年間</option>
+      <option value="custom" {% if preset=='custom' %}selected{% endif %}>カスタム</option>
+    </select>
+    {% if preset=='custom' %}
+    <input type="date" name="from" value="{{ start_date }}" class="form-control form-control-sm">
+    <input type="date" name="to"   value="{{ end_date }}"   class="form-control form-control-sm">
+    <button class="btn btn-sm btn-primary">表示</button>
+    {% endif %}
+    <!-- 現在アクティブなタブを保持（期間変更後も同じビューを維持）-->
+    <input type="hidden" name="tab" id="hiddenTab" value="{{ tab }}">
+  </form>
+</div>
+
+<!-- プライスター風 KPI テーブル -->
+<div class="card kpi-card mb-3">
+  <div class="card-header">{{ start_date }} 〜 {{ end_date }} の売上集計</div>
+  <div class="card-body p-0">
+    <table class="table table-sm kpi-table mb-0">
+      <thead>
+        <tr>
+          <th title="期間内に売れた個数（Pending除外、返品は設定に依存）">販売数</th>
+          <th title="期間内の売上総額（item_price × qty_ordered の合計）">売上金額</th>
+          <th title="現在の Active 在庫の仕入価格 × 数量の合計（棚卸資産・期末時点）">在庫金額</th>
+          <th title="期間内の仕入総額（cost_price × qty_ordered）">仕入金額</th>
+          <th title="個別注文手数料（Commission/FBA手数料、確定値+推定）+ 月次サブスク等（Finances API）">Amazon手数料</th>
+          <th title="経費画面で入力した月次経費（Amazon利用料以外）+ 発送代行手数料(基本料 × 月数 + 1商品単位 × 数量)">その他経費</th>
+          <th title="利益額 = 売上 + 送料 − 仕入 − Amazon手数料 − その他経費 − プロモ − 返金(設定による)">利益額</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>{{ kpi.qty_total }} コ</td>
+          <td>{{ "{:,}".format(kpi.sales_total|int) }} 円</td>
+          <td>{{ "{:,}".format(kpi.inventory_value|int) }} 円</td>
+          <td class="text-danger">-{{ "{:,}".format(kpi.cost_total|int) }} 円</td>
+          <td class="text-danger">-{{ "{:,}".format(kpi.amazon_fee_total|int) }} 円</td>
+          <td class="text-danger">-{{ "{:,}".format(kpi.other_expense|int) }} 円</td>
+          <td class="{% if kpi.profit > 0 %}text-success{% else %}text-danger{% endif %}">
+            {{ "{:,}".format(kpi.profit|int) }} 円
+          </td>
+        </tr>
+      </tbody>
+      <thead>
+        <tr>
+          <th title="販売数 ÷ 期間日数">平均売上数/日</th>
+          <th title="売上金額 ÷ 販売数">平均売上単価/個</th>
+          <th title="仕入金額 ÷ 販売数">平均仕入単価/個</th>
+          <th title="送料 + ギフト入金（Finances API の ItemChargeList より）">送料/ギフト入金</th>
+          <th title="顧客に付与した Amazon ポイント（未対応・将来 Finances API で実装）">ポイント</th>
+          <th title="期間内の返品。設定の返品扱いが「除外」なら参考表示、「返金控除」なら利益から差し引く">返品</th>
+          <th title="利益額 ÷ 売上金額 × 100">利益率</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>{{ "%.2f"|format(kpi.avg_qty_per_day) }}</td>
+          <td>{{ "{:,.2f}".format(kpi.avg_price_per_unit) }} 円</td>
+          <td>{{ "{:,.2f}".format(kpi.avg_cost_per_unit) }} 円</td>
+          <td>{{ "{:,}".format(kpi.shipping_income|int) }} 円</td>
+          <td>0 pt</td>
+          <td class="{% if return_model == 'subtract_refund' %}text-danger{% else %}text-muted{% endif %}">
+            {% if kpi.refund_count %}
+              {% if return_model == 'subtract_refund' %}
+                -{{ "{:,}".format(kpi.refund_amount|int) }} 円
+                <small class="d-block">{{ kpi.refund_count }}件</small>
+              {% else %}
+                {{ kpi.refund_count }} 件
+                <small class="text-muted d-block">¥{{ "{:,}".format(kpi.refund_amount|int) }}</small>
+              {% endif %}
+            {% else %}0 件{% endif %}
+          </td>
+          <td class="{% if kpi.profit_rate > 0 %}text-success{% else %}text-danger{% endif %}">
+            {{ "%.2f"|format(kpi.profit_rate) }} %
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<ul class="nav nav-tabs" role="tablist">
+  <li class="nav-item"><button class="nav-link {% if tab=='monthly' %}active{% endif %}" data-bs-toggle="tab" data-bs-target="#tab-monthly" data-tab="monthly">月別</button></li>
+  <li class="nav-item"><button class="nav-link {% if tab=='daily' %}active{% endif %}" data-bs-toggle="tab" data-bs-target="#tab-daily" data-tab="daily">日別</button></li>
+  <li class="nav-item"><button class="nav-link {% if tab=='dow' %}active{% endif %}" data-bs-toggle="tab" data-bs-target="#tab-dow" data-tab="dow">曜日別</button></li>
+  <li class="nav-item"><button class="nav-link {% if tab=='hour' %}active{% endif %}" data-bs-toggle="tab" data-bs-target="#tab-hour" data-tab="hour">時間帯別</button></li>
+</ul>
+
+<div class="tab-content pt-3">
+  <div class="tab-pane fade {% if tab=='monthly' %}show active{% endif %}" id="tab-monthly"><canvas id="chMonthly" height="110"></canvas></div>
+  <div class="tab-pane fade {% if tab=='daily' %}show active{% endif %}" id="tab-daily"><canvas id="chDaily" height="110"></canvas></div>
+  <div class="tab-pane fade {% if tab=='dow' %}show active{% endif %}" id="tab-dow"><canvas id="chDow" height="110"></canvas></div>
+  <div class="tab-pane fade {% if tab=='hour' %}show active{% endif %}" id="tab-hour"><canvas id="chHour" height="110"></canvas></div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ダッシュボードと同じカラー
+const C = {
+  sales:'#0071e3', salesCum:'#005bb5',
+  qty:'#ff9500',
+  profit:'#34c759', profitCum:'#1f9a4a',
+};
+const rgba = (hex, a) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+};
+
+function mkChart(id, data, withCum) {
+  const datasets = [
+    { type: 'bar', label: '日次売上 (円)', data: data.map(d => d.sales),
+      backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4 },
+    { type: 'bar', label: '販売数', data: data.map(d => d.qty),
+      backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 3 },
+  ];
+  const scales = {
+    y:  { type: 'linear', position: 'left',
+          title: { display: true, text: '日次売上 (円)', color: C.sales },
+          ticks: { color: C.sales } },
+    y1: { type: 'linear', position: 'right',
+          title: { display: true, text: '販売数', color: C.qty },
+          ticks: { color: C.qty, stepSize: 1 },
+          grid: { drawOnChartArea: false } }
+  };
+  if (withCum) {
+    datasets.push({
+      type: 'line', label: '累計売上 (円)', data: data.map(d => d.cum),
+      borderColor: C.salesCum, backgroundColor: C.salesCum,
+      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 2
+    });
+    datasets.push({
+      type: 'line', label: '累計利益 (円)', data: data.map(d => d.cum_profit || 0),
+      borderColor: C.profitCum, backgroundColor: C.profitCum,
+      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1
+    });
+    scales.yCum = {
+      type: 'linear', position: 'left',
+      title: { display: true, text: '累計 売上 / 利益 (円)', color: C.salesCum },
+      ticks: { color: C.salesCum }, grid: { drawOnChartArea: false }, offset: true
+    };
+  }
+  return new Chart(document.getElementById(id), {
+    data: { labels: data.map(d => d.k), datasets: datasets },
+    options: { responsive: true, scales: scales }
+  });
+}
+mkChart('chMonthly', {{ monthly|tojson }}, false);
+mkChart('chDaily',   {{ daily|tojson }}, true);
+mkChart('chDow',     {{ dow|tojson }}, false);
+mkChart('chHour',    {{ hour|tojson }}, false);
+
+// タブ切替時に hidden input と URL を更新（期間変更後もアクティブタブを維持するため）
+const hiddenTab = document.getElementById('hiddenTab');
+document.querySelectorAll('[data-tab]').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    const tabName = btn.dataset.tab;
+    // 月別タブをクリック時は preset != year なら 年間 に切替（自動遷移）
+    if (tabName === 'monthly') {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('preset') !== 'year') {
+        url.searchParams.set('preset', 'year');
+        url.searchParams.set('tab', 'monthly');
+        e.preventDefault();
+        window.location.href = url.toString();
+        return;
+      }
+    }
+    // 通常タブ切替: hidden input 更新 + URL のクエリも更新（リロード無し、履歴用）
+    if (hiddenTab) hiddenTab.value = tabName;
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tabName);
+    window.history.replaceState({}, '', url.toString());
+  });
+});
+</script>
+{% endblock %}

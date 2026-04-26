@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}ダッシュボード{% endblock %}
+{% block content %}
+<h2>📊 ダッシュボード</h2>
+
+<div class="row g-3 my-3">
+  <div class="col-md col-6">
+    <div class="card dash-card dash-sales">
+      <div class="card-body">
+        <h6 class="card-subtitle">今月の売上</h6>
+        <h3>¥{{ "{:,}".format(stats.sales_total|int) }}</h3>
+      </div>
+    </div>
+  </div>
+  <div class="col-md col-6">
+    <div class="card dash-card dash-qty">
+      <div class="card-body">
+        <h6 class="card-subtitle">今月の販売数</h6>
+        <h3>{{ stats.qty_total }} 個</h3>
+      </div>
+    </div>
+  </div>
+  <div class="col-md col-6">
+    <div class="card dash-card dash-cost">
+      <div class="card-body">
+        <h6 class="card-subtitle">今月の仕入額</h6>
+        <h3>¥{{ "{:,}".format(stats.cost_total|int) }}</h3>
+      </div>
+    </div>
+  </div>
+  <div class="col-md col-6">
+    <div class="card dash-card dash-profit">
+      <div class="card-body">
+        <h6 class="card-subtitle">今月の利益額</h6>
+        <h3>¥{{ "{:,}".format(stats.profit|int) }}</h3>
+      </div>
+    </div>
+  </div>
+  <div class="col-md col-6">
+    <div class="card dash-card dash-inventory">
+      <div class="card-body">
+        <h6 class="card-subtitle">現在の在庫数</h6>
+        <h3>{{ stats.inventory_count }} 点</h3>
+      </div>
+    </div>
+  </div>
+  <div class="col-md col-6">
+    <div class="card dash-card dash-returns">
+      <div class="card-body">
+        <h6 class="card-subtitle">過去30日の返品</h6>
+        <h3>{{ returns_count }} 件</h3>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card my-3">
+  <div class="card-header">📈 {{ year_month }}の売上推移</div>
+  <div class="card-body">
+    <canvas id="monthChart" height="90"></canvas>
+  </div>
+</div>
+
+<h4 class="mt-4">🆕 最新の売れた商品</h4>
+<div class="table-responsive">
+  <table class="table table-sm table-striped">
+    <thead><tr><th>購入日</th><th>SKU</th><th>商品名</th><th class="text-end">価格</th></tr></thead>
+    <tbody>
+      {% for r in recent_sold %}
+      <tr>
+        <td>{{ r.purchase_date[:10] if r.purchase_date else '' }}</td>
+        <td><code>{{ r.seller_sku }}</code></td>
+        <td>{{ (r.title or '')[:60] }}</td>
+        <td class="text-end">¥{{ "{:,}".format(r.item_price|int) if r.item_price else '-' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="text-muted">データがありません。Polling を実行してください。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const thisMonth = {{ this_month|tojson }};
+const labels = thisMonth.map(d => d.d + '日');
+const sales      = thisMonth.map(d => d.sales);
+const qty        = thisMonth.map(d => d.qty);
+const cumSales   = thisMonth.map(d => d.cum);
+const profit     = thisMonth.map(d => d.profit);
+const cumProfit  = thisMonth.map(d => d.cum_profit);
+
+// KPIカードと揃える色（売上=青 / 販売数=橙 / 仕入=赤 / 利益=緑）
+const C = {
+  sales:     '#0071e3',          // カード dash-sales
+  salesCum:  '#005bb5',          // カード dash-sales 濃色
+  qty:       '#ff9500',          // カード dash-qty
+  profit:    '#34c759',          // カード dash-profit
+  profitCum: '#1f9a4a',          // カード dash-profit 濃色
+};
+const rgba = (hex, a) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+};
+
+new Chart(document.getElementById('monthChart'), {
+  data: {
+    labels: labels,
+    datasets: [
+      // 日次売上（左軸 y）棒 - 青
+      { type: 'bar',  label: '日次売上 (円)', data: sales,
+        backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4 },
+      // 販売数（右軸 y1）棒 - 橙
+      { type: 'bar',  label: '販売数', data: qty,
+        backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 3 },
+      // 累計売上 線 - 濃青
+      { type: 'line', label: '累計売上 (円)', data: cumSales,
+        borderColor: C.salesCum, backgroundColor: C.salesCum,
+        pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 2 },
+      // 累計利益 線 - 濃緑
+      { type: 'line', label: '累計利益 (円)', data: cumProfit,
+        borderColor: C.profitCum, backgroundColor: C.profitCum,
+        pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1 }
+    ]
+  },
+  options: {
+    responsive: true,
+    scales: {
+      y:    { type: 'linear', position: 'left',
+              title: { display: true, text: '日次売上 (円)', color: C.sales },
+              ticks: { color: C.sales } },
+      yCum: { type: 'linear', position: 'left',
+              title: { display: true, text: '累計 売上 / 利益 (円)', color: C.salesCum },
+              ticks: { color: C.salesCum },
+              grid: { drawOnChartArea: false }, offset: true },
+      y1:   { type: 'linear', position: 'right',
+              title: { display: true, text: '販売数', color: C.qty },
+              ticks: { color: C.qty, stepSize: 1 },
+              grid: { drawOnChartArea: false } }
+    }
+  }
+});
+</script>
+{% endblock %}

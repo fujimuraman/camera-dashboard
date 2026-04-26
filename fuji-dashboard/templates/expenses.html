@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}経費{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">💰 経費</h2>
+  <form method="get" class="d-flex gap-2">
+    <input type="month" name="ym" value="{{ year_month }}" class="form-control form-control-sm" onchange="this.form.submit()">
+  </form>
+</div>
+
+<form method="post">
+  <input type="hidden" name="year_month" value="{{ year_month }}">
+
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between">
+      <span>{{ year_month }} の経費</span>
+      <small class="text-muted">💡 Amazon利用料は Finances API から自動集計</small>
+    </div>
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-sm table-striped align-middle">
+          <thead>
+            <tr>
+              <th title="経費の項目名。Amazon利用料は SP-API Finances から自動集計されます">項目</th>
+              <th style="width:140px" title="確定申告用の勘定科目（青色申告）。集計時にこの費目別に分類されます">費目</th>
+              <th style="width:160px" title="この月の経費額（円）">金額 (円)</th>
+              <th style="width:90px"
+                  title="ON にしておくと、次月以降この値が自動的に当月のデフォルトとして引き継がれます。家賃や通信費など毎月固定費に便利。">毎月繰り返し</th>
+              <th title="自由メモ。その他経費は何の経費かを書く欄。デフォルトテキストはガイダンス、上書き編集可能">メモ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for cat, tax_cat, default_memo, kind in expense_def %}
+            {% set e = expense_map.get(cat) %}
+            {% set is_auto = (kind == "auto") %}
+            {% set is_user = (kind == "user") %}
+            {% set is_income = (kind == "income") %}
+            {% set is_inherited = e and e.get('_inherited') %}
+            <tr>
+              <td>
+                <strong>{{ cat }}</strong>
+                {% if is_auto %}<span class="badge bg-info ms-1" title="Finances API 自動集計">自動</span>{% endif %}
+                {% if is_income %}<span class="badge bg-secondary ms-1" title="プラス要素として計算">＋</span>{% endif %}
+                {% if is_inherited %}<span class="badge bg-warning text-dark ms-1" title="前月から継承（保存で確定）">継</span>{% endif %}
+              </td>
+              <td class="small">
+                {% if is_user %}
+                  {# ユーザー選択ドロップダウン #}
+                  <select name="tax_{{ cat }}" class="form-select form-select-sm">
+                    <option value="">— 費目選択 —</option>
+                    {% for tc in tax_categories %}
+                    <option value="{{ tc }}" {% if e and e.tax_category == tc %}selected{% endif %}>{{ tc }}</option>
+                    {% endfor %}
+                  </select>
+                {% elif is_income %}
+                  <span class="text-muted">（収入扱い）</span>
+                {% else %}
+                  <span class="text-muted" title="固定割当: 確定申告でこの費目に集計されます">{{ tax_cat }}</span>
+                {% endif %}
+              </td>
+              <td>
+                <div class="yen-input">
+                  <span class="yen-prefix">¥</span>
+                  <input type="text" inputmode="numeric" pattern="[0-9]*"
+                         name="amt_{{ cat }}" class="form-control form-control-sm no-spin"
+                         style="max-width:130px"
+                         value="{{ e.amount|int if e else 0 }}"
+                         {% if is_auto %}readonly title="Finances API で自動更新"{% endif %}>
+                </div>
+              </td>
+              <td class="text-center">
+                {% if not is_auto %}
+                <input type="checkbox" name="rep_{{ cat }}" class="form-check-input"
+                       {% if e and e.repeat_monthly %}checked{% endif %}>
+                {% endif %}
+              </td>
+              <td class="small">
+                {% set placeholder = ('何の経費か（例: 税理士費用）' if is_user else 'メモ') %}
+                <input type="text" name="note_{{ cat }}" class="form-control form-control-sm
+                       {% if is_user %}border-primary{% endif %}"
+                       value="{{ e.note if e and e.note else default_memo }}"
+                       placeholder="{{ placeholder }}" maxlength="200">
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {# 月表記を「2026年4月」のように整形 #}
+  {% set _ym_parts = year_month.split('-') %}
+  {% set _ym_label = _ym_parts[0] + '年' + (_ym_parts[1]|int|string) + '月' %}
+  {% set _other_e = expense_map.get('発送代行その他') %}
+  {% set _other_inherited = _other_e and _other_e.get('_inherited') %}
+  <div class="card mb-3">
+    <div class="card-header">📦 発送代行手数料（{{ _ym_label }}）</div>
+    <div class="card-body">
+      <p class="text-muted small mb-2">
+        発送代行業者への支払い。<br>
+        <strong>基本料</strong>（月額固定）+ <strong>発送数 × 1商品あたり手数料</strong> を毎注文に自動反映。
+        各項目に <strong>毎月繰り返し</strong> ON で次月以降に値を継承。<br>
+        <strong>その他手数料</strong> は請求明細から「基本料 + 1商品手数料の合計」を引いた残差（保管料・備品購入・送料・割引調整 等）。
+      </p>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label">
+            基本料（月額）
+            {% if base_inherited %}<span class="badge bg-warning text-dark ms-1" title="前月から継承（保存で確定）">継</span>{% endif %}
+          </label>
+          <div class="yen-input">
+            <span class="yen-prefix">¥</span>
+            <input type="number" step="1" name="base_fee" class="form-control no-spin"
+                   value="{{ shipping_agent.base_fee|int if shipping_agent else 0 }}">
+          </div>
+          <div class="form-check small mt-1">
+            <input type="checkbox" name="rep_base_fee" id="rep_base_fee"
+                   class="form-check-input"
+                   {% if shipping_agent and shipping_agent.repeat_base %}checked{% endif %}>
+            <label class="form-check-label" for="rep_base_fee">毎月繰り返し</label>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">
+            1商品あたり手数料
+            {% if per_item_inherited %}<span class="badge bg-warning text-dark ms-1" title="前月から継承（保存で確定）">継</span>{% endif %}
+          </label>
+          <div class="yen-input">
+            <span class="yen-prefix">¥</span>
+            <input type="number" step="1" name="per_item_fee" class="form-control no-spin"
+                   value="{{ shipping_agent.per_item_fee|int if shipping_agent else 0 }}">
+          </div>
+          <div class="form-check small mt-1">
+            <input type="checkbox" name="rep_per_item_fee" id="rep_per_item_fee"
+                   class="form-check-input"
+                   {% if shipping_agent and shipping_agent.repeat_per_item %}checked{% endif %}>
+            <label class="form-check-label" for="rep_per_item_fee">毎月繰り返し</label>
+          </div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">
+            その他手数料（{{ _ym_label }}分）
+            {% if _other_inherited %}<span class="badge bg-warning text-dark ms-1" title="前月から継承（保存で確定）">継</span>{% endif %}
+          </label>
+          <div class="yen-input">
+            <span class="yen-prefix">¥</span>
+            <input type="number" step="1" name="amt_発送代行その他" class="form-control no-spin"
+                   value="{{ _other_e.amount|int if _other_e else 0 }}">
+          </div>
+          <div class="form-check small mt-1">
+            <input type="checkbox" name="rep_発送代行その他" id="rep_dq_other"
+                   class="form-check-input"
+                   {% if _other_e and _other_e.repeat_monthly %}checked{% endif %}>
+            <label class="form-check-label" for="rep_dq_other">毎月繰り返し</label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn btn-success">保存</button>
+</form>
+{% endblock %}

@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}注文一覧{% endblock %}
+{% block content %}
+<h2>📦 注文一覧 <small class="text-muted">{{ total_count }}件{% if total_pages > 1 %}（{{ page }}/{{ total_pages }}ページ）{% endif %}</small></h2>
+
+<form class="row g-2 my-3" method="get">
+  <div class="col-auto">
+    <select name="period" class="form-select" onchange="this.form.submit()">
+      <option value="this" {% if period=='this' %}selected{% endif %}>当月</option>
+      <option value="prev" {% if period=='prev' %}selected{% endif %}>前月</option>
+      <option value="days" {% if period=='days' %}selected{% endif %}>過去N日</option>
+      <option value="all"  {% if period=='all'  %}selected{% endif %}>全期間</option>
+    </select>
+  </div>
+  {% if period=='days' %}
+  <div class="col-auto">
+    <select name="days" class="form-select">
+      <option value="7" {% if days==7 %}selected{% endif %}>過去7日</option>
+      <option value="14" {% if days==14 %}selected{% endif %}>過去14日</option>
+      <option value="30" {% if days==30 %}selected{% endif %}>過去30日</option>
+      <option value="90" {% if days==90 %}selected{% endif %}>過去3ヶ月</option>
+    </select>
+  </div>
+  {% endif %}
+  <div class="col-auto">
+    <select name="status" class="form-select">
+      <option value="all" {% if status=='all' %}selected{% endif %}>全て</option>
+      <option value="shipped" {% if status=='shipped' %}selected{% endif %}>Shipped</option>
+      <option value="unshipped" {% if status=='unshipped' %}selected{% endif %}>Unshipped</option>
+      <option value="pending" {% if status=='pending' %}selected{% endif %}>Pending</option>
+      <option value="canceled" {% if status=='canceled' %}selected{% endif %}>Canceled</option>
+      <option value="return" {% if status=='return' %}selected{% endif %}>Return</option>
+    </select>
+  </div>
+  <div class="col-auto"><button class="btn btn-primary">絞り込み</button></div>
+</form>
+
+<div class="table-responsive">
+  <table id="ordersTable" class="table table-sm table-hover">
+    <thead>
+      <tr>
+        <th data-sort data-type="date" title="Amazon が注文を受け付けた日（PurchaseDate）">注文日</th>
+        <th data-sort data-type="date" title="ASIN を Amazon に登録した日（出品日 / Merchant Listings レポートの『出品日』列）">登録日</th>
+        <th data-sort data-type="num"  title="販売日数 = 注文日 − ASIN登録日。商品の購買力指標。短い=人気、長い=塩漬け">販売日数</th>
+        <th data-sort title="自社 SKU と Amazon ASIN（クリック先で商品ページ）">SKU/ASIN</th>
+        <th data-sort title="商品タイトル（先頭50文字）">商品名</th>
+        <th data-sort data-type="num" class="text-end" title="顧客が支払った商品価格（item_price）">価格</th>
+        <th data-sort data-type="num" class="text-end" title="上段=合計手数料 / 中段=Amazon手数料 / 下段=発送代行手数料">手数料</th>
+        <th data-sort data-type="num" class="text-end" title="該当 SKU の仕入値">仕入</th>
+        <th data-sort data-type="num" class="text-end" title="粗利益 = 価格 − 手数料 − 仕入">粗利益</th>
+        <th data-sort title="Shipped=発送済 / Unshipped=未発送 / Pending=金額未確定 / Canceled=キャンセル / Return=返品">状態</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for o in orders %}
+      <tr class="{% if o._is_return %}table-danger{% endif %}">
+        <td data-sort-value="{{ o.purchase_date[:10] if o.purchase_date else '' }}">{{ o.purchase_date[:10] if o.purchase_date else '' }}</td>
+        <td data-sort-value="{{ o._listed_short or '' }}">
+          {% if o._listed_short %}<small>{{ o._listed_short }}</small>{% else %}<small class="text-muted">—</small>{% endif %}
+        </td>
+        <td class="text-end" data-sort-value="{{ o._days_to_sell if o._days_to_sell is not none else -1 }}">
+          {% if o._days_to_sell is not none %}
+            <span class="badge {% if o._days_to_sell <= 7 %}bg-success{% elif o._days_to_sell <= 30 %}bg-info{% elif o._days_to_sell <= 90 %}bg-warning text-dark{% else %}bg-danger{% endif %}"
+                  title="販売までに掛かった日数（短いほど人気）">
+              {{ o._days_to_sell }}日
+            </span>
+          {% else %}<small class="text-muted">—</small>{% endif %}
+        </td>
+        <td><code>{{ o.seller_sku }}</code><br><small>{{ o.asin }}</small></td>
+        <td>{{ (o.title or '')[:50] }}</td>
+
+        {% if o._is_return %}
+          <td class="text-end text-muted" data-sort-value="-1">—</td>
+          <td class="text-end fee-cell" data-sort-value="{{ o._display_fee|int if o._display_fee else 0 }}">
+            <div class="fee-row text-danger">
+              <span class="fee-prefix"></span>
+              <span class="fee-label">合計</span>
+              <span class="fee-amount">{% if o._display_fee %}-¥{{ "{:,}".format(o._display_fee|int) }}{% else %}—{% endif %}</span>
+            </div>
+            <div class="fee-row" title="返品時 REVERSAL_REIMBURSEMENT で返金される想定で計上 0">
+              <span class="fee-prefix"></span>
+              <small class="fee-label text-muted text-decoration-line-through">Amazon</small>
+              <small class="fee-amount text-muted">
+                {% if o._amz_fee_for_return %}<s>-¥{{ "{:,}".format(o._amz_fee_for_return|int) }}</s>{% else %}—{% endif %}
+              </small>
+            </div>
+            <div class="fee-row">
+              <span class="fee-prefix"></span>
+              <small class="fee-label text-muted">代行</small>
+              <small class="fee-amount text-muted">-¥{{ "{:,}".format(o._shipping_fee|int) if o._shipping_fee else 0 }}</small>
+            </div>
+          </td>
+          <td class="text-end text-muted" data-sort-value="-1">—</td>
+          <td class="text-end {% if o._display_profit and o._display_profit < 0 %}text-danger{% else %}text-muted{% endif %}"
+              data-sort-value="{{ o._display_profit|int if o._display_profit is not none else -999999 }}">
+            {% if o._display_profit is not none and o._display_profit != 0 %}
+              ¥{{ "{:,}".format(o._display_profit|int) }}
+            {% else %}—{% endif %}
+          </td>
+        {% else %}
+          <td class="text-end" data-sort-value="{{ o._display_price|int if o._display_price else -1 }}">¥{{ "{:,}".format(o._display_price|int) if o._display_price else '—' }}</td>
+          <td class="text-end fee-cell" data-sort-value="{{ o._display_fee|int if o._display_fee else 0 }}">
+            <div class="fee-row text-danger">
+              <span class="fee-prefix"></span>
+              <span class="fee-label">合計</span>
+              <span class="fee-amount">{% if o._display_fee %}-¥{{ "{:,}".format(o._display_fee|int) }}{% else %}—{% endif %}</span>
+            </div>
+            <div class="fee-row">
+              <span class="fee-prefix">
+                {% if o._fee_confirmed %}<span class="badge bg-success" title="SP-API Finances確定値">確</span>
+                {% else %}<span class="badge bg-secondary" title="タイトル推定 {{ '%.0f%%'|format((o._fee_rate or 0.08) * 100) }}">推</span>{% endif %}
+              </span>
+              <small class="fee-label text-muted">Amazon</small>
+              <small class="fee-amount text-muted">-¥{{ "{:,}".format(o._amz_fee|int) if o._amz_fee else 0 }}</small>
+            </div>
+            <div class="fee-row">
+              <span class="fee-prefix"></span>
+              <small class="fee-label text-muted">代行</small>
+              <small class="fee-amount text-muted">-¥{{ "{:,}".format(o._shipping_fee|int) if o._shipping_fee else 0 }}</small>
+            </div>
+          </td>
+          <td class="text-end" data-sort-value="{{ o._display_cost|int if o._display_cost else -1 }}">{% if o._display_cost %}¥{{ "{:,}".format(o._display_cost|int) }}{% else %}—{% endif %}</td>
+          <td class="text-end {% if o._display_profit and o._display_profit > 0 %}text-success{% else %}text-danger{% endif %}"
+              data-sort-value="{{ o._display_profit|int if o._display_profit is not none else -999999 }}">
+            ¥{{ "{:,}".format(o._display_profit|int) if o._display_profit is not none else '—' }}
+          </td>
+        {% endif %}
+
+        <td>
+          {% if o._is_return %}
+          <span class="badge bg-danger">Return</span>
+          {% else %}
+          <small>{{ o._display_status }}</small>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10" class="text-muted">データがありません</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{# 列ソート: クリックで昇順/降順切替（▲▼） #}
+<script>
+(function(){
+  const tbl = document.getElementById('ordersTable');
+  if (!tbl) return;
+  const sortState = { idx: null, asc: true };
+  function parse(td, type) {
+    if (td.dataset && td.dataset.sortValue !== undefined) {
+      const v = td.dataset.sortValue;
+      const n = parseFloat(v);
+      return isNaN(n) ? v : n;
+    }
+    const raw = td.innerText.trim();
+    if (type === 'num') {
+      const n = parseFloat(raw.replace(/[¥,\s%日]/g, ''));
+      return isNaN(n) ? -Infinity : n;
+    }
+    if (type === 'date') {
+      const d = Date.parse(raw);
+      return isNaN(d) ? -Infinity : d;
+    }
+    return raw;
+  }
+  function sortBy(idx, type) {
+    const tbody = tbl.querySelector('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const asc = sortState.idx === idx ? !sortState.asc : true;
+    rows.sort((a, b) => {
+      const av = parse(a.cells[idx], type);
+      const bv = parse(b.cells[idx], type);
+      if (typeof av === 'number' && typeof bv === 'number') return asc ? av - bv : bv - av;
+      return asc ? String(av).localeCompare(String(bv), 'ja') : String(bv).localeCompare(String(av), 'ja');
+    });
+    rows.forEach(r => tbody.appendChild(r));
+    sortState.idx = idx; sortState.asc = asc;
+    tbl.querySelectorAll('th[data-sort]').forEach((th, i) => {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (i === idx) th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+    });
+  }
+  tbl.querySelectorAll('th[data-sort]').forEach((th, idx) => {
+    th.style.cursor = 'pointer';
+    th.addEventListener('click', () => sortBy(idx, th.dataset.type || 'text'));
+  });
+})();
+</script>
+
+{% if total_pages > 1 %}
+{# ページネーション。現在のフィルタ値を保持して page だけ変える #}
+{% set qs = 'period=' + period + '&status=' + status + ('&days=' + days|string if period=='days' else '') %}
+<nav class="mt-3">
+  <ul class="pagination pagination-sm justify-content-center">
+    <li class="page-item {% if page == 1 %}disabled{% endif %}">
+      <a class="page-link" href="?{{ qs }}&page=1">« 最初</a>
+    </li>
+    <li class="page-item {% if page == 1 %}disabled{% endif %}">
+      <a class="page-link" href="?{{ qs }}&page={{ page - 1 }}">‹ 前</a>
+    </li>
+    {# 前後2ページのリンクを生成（5ページ分） #}
+    {% set _start = [1, page - 2]|max %}
+    {% set _end   = [total_pages, page + 2]|min %}
+    {% for p in range(_start, _end + 1) %}
+    <li class="page-item {% if p == page %}active{% endif %}">
+      <a class="page-link" href="?{{ qs }}&page={{ p }}">{{ p }}</a>
+    </li>
+    {% endfor %}
+    <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+      <a class="page-link" href="?{{ qs }}&page={{ page + 1 }}">次 ›</a>
+    </li>
+    <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+      <a class="page-link" href="?{{ qs }}&page={{ total_pages }}">最後 »</a>
+    </li>
+  </ul>
+  <p class="text-muted small text-center mb-0">
+    {{ (page - 1) * per_page + 1 }} 〜 {{ [page * per_page, total_count]|min }} 件 / 全 {{ total_count }} 件
+  </p>
+</nav>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}価格自動調整{% endblock %}
+{% block content %}
+<h2>💹 価格自動調整設定</h2>
+
+<div class="d-flex gap-2 my-3">
+  <form method="post" action="{{ url_for('price_engine_run') }}" style="display:inline">
+    <button class="btn btn-outline-primary" type="submit">🧪 エンジン実行 (DRY RUN)</button>
+  </form>
+  <form method="post" action="{{ url_for('price_engine_run') }}" style="display:inline"
+        onsubmit="return confirm('⚠️ 本番で Amazon 出品価格を変更します。よろしいですか？');">
+    <input type="hidden" name="apply" value="1">
+    <button class="btn btn-danger" type="submit">⚡ 本番実行（価格更新）</button>
+  </form>
+  <a href="{{ url_for('price_engine_log') }}" class="btn btn-outline-secondary">📜 変更ログ</a>
+</div>
+
+<div class="alert alert-info">
+  <strong>価格追従モード（プリセット5種）</strong>:
+  <ul class="mb-0">
+    <li><code>fba_condition</code>: FBA 内で同コンディションの最安値に合わせる</li>
+    <li><code>all_condition</code>: 全出品で同コンディションの最安値</li>
+    <li><code>fba_min</code>: FBA 全体の最安値</li>
+    <li><code>all_min</code>: 全出品の最安値</li>
+    <li><code>cart</code>: カート価格に合わせる</li>
+    <li><code>none</code>: 自動調整なし</li>
+  </ul>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">新規 / 更新</div>
+  <div class="card-body">
+    <form method="post" class="row g-2">
+      <div class="col-md-3"><label class="form-label">SKU</label>
+        <input type="text" name="sku" class="form-control" required></div>
+      <div class="col-md-3"><label class="form-label">モード</label>
+        <select name="mode" class="form-select">
+          <option value="none">自動調整なし</option>
+          <option value="fba_condition">FBA状態合わせ</option>
+          <option value="all_condition">状態合わせ</option>
+          <option value="fba_min">FBA最安値</option>
+          <option value="all_min">最安値</option>
+          <option value="cart">カート価格</option>
+        </select></div>
+      <div class="col-md-3"><label class="form-label">高値ストッパー</label>
+        <input type="number" step="1" name="high_stopper" class="form-control"></div>
+      <div class="col-md-3"><label class="form-label">赤字ストッパー</label>
+        <input type="number" step="1" name="low_stopper" class="form-control"></div>
+      <div class="col-12"><button class="btn btn-success">保存</button></div>
+    </form>
+  </div>
+</div>
+
+<h4>現在の設定</h4>
+<div class="table-responsive">
+  <table class="table table-sm table-hover">
+    <thead>
+      <tr>
+        <th>SKU</th><th>ASIN</th><th>商品名</th><th>出品価格</th><th>仕入価格</th>
+        <th>モード</th><th>高値</th><th>赤字</th><th>更新日</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rules %}
+      <tr>
+        <td><code>{{ r.seller_sku }}</code></td>
+        <td><small>{{ r.asin or '' }}</small></td>
+        <td>{{ (r.title or '')[:40] }}</td>
+        <td class="text-end">¥{{ "{:,}".format(r.listing_price|int) if r.listing_price else '-' }}</td>
+        <td class="text-end">¥{{ "{:,}".format(r.cost_price|int) if r.cost_price else '-' }}</td>
+        <td><span class="badge bg-info">{{ r.mode }}</span></td>
+        <td class="text-end">{% if r.high_stopper %}¥{{ "{:,}".format(r.high_stopper|int) }}{% endif %}</td>
+        <td class="text-end">{% if r.low_stopper %}¥{{ "{:,}".format(r.low_stopper|int) }}{% endif %}</td>
+        <td><small>{{ r.updated_at[:10] if r.updated_at else '' }}</small></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="text-muted">まだルールが設定されていません</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

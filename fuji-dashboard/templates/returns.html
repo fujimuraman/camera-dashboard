@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}返品一覧{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">↩️ 返品一覧 <small class="text-muted">{{ returns|length }}件</small></h2>
+  <form method="get">
+    <select name="days" class="form-select form-select-sm" onchange="this.form.submit()">
+      <option value="30"  {% if days==30  %}selected{% endif %}>過去30日</option>
+      <option value="90"  {% if days==90  %}selected{% endif %}>過去90日</option>
+      <option value="180" {% if days==180 %}selected{% endif %}>過去180日</option>
+      <option value="365" {% if days==365 %}selected{% endif %}>過去1年</option>
+    </select>
+  </form>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-sm table-hover">
+    <thead class="table-light">
+      <tr>
+        <th>返品日</th>
+        <th>注文番号</th>
+        <th>SKU / ASIN</th>
+        <th>商品名</th>
+        <th class="text-end">数量</th>
+        <th>理由</th>
+        <th>処分状況</th>
+        <th>お客様コメント</th>
+        <th>FC</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in returns %}
+      <tr>
+        <td><small>{{ r.return_date[:10] if r.return_date else '' }}</small></td>
+        <td>
+          <code>{{ r.amazon_order_id }}</code><br>
+          <a href="https://sellercentral.amazon.co.jp/orders-v3/order/{{ r.amazon_order_id }}"
+             target="_blank" class="small">SC で見る</a>
+        </td>
+        <td>
+          <code>{{ r.seller_sku }}</code><br>
+          <small class="text-muted">{{ r.asin }}</small>
+          {% if r.fnsku %}<br><small class="text-muted">FNSKU: {{ r.fnsku }}</small>{% endif %}
+        </td>
+        <td><small>{{ (r.title or '')[:60] }}</small></td>
+        <td class="text-end">{{ r.quantity or 1 }}</td>
+        <td><small>{{ r.reason }}</small></td>
+        <td>
+          <small class="{% if r.detailed_disposition == 'SELLABLE' %}text-success{% else %}text-warning{% endif %}">
+            {{ r.detailed_disposition }}
+          </small>
+        </td>
+        <td class="return-comment">
+          {% if r.customer_comments %}
+          <small>{{ r.customer_comments }}</small>
+          {% else %}
+          <span class="text-muted small">—</span>
+          {% endif %}
+        </td>
+        <td><small class="text-muted">{{ r.fulfillment_center_id }}</small></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="text-muted text-center py-4">返品データがありません。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

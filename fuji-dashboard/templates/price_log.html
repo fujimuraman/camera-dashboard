@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}価格変更ログ{% endblock %}
+{% block content %}
+<h2>📜 価格変更ログ</h2>
+<p><a href="{{ url_for('price_rules') }}">← 価格調整設定へ戻る</a></p>
+
+<div class="table-responsive">
+  <table class="table table-sm table-hover">
+    <thead>
+      <tr>
+        <th>実行時刻</th><th>SKU</th>
+        <th class="text-end">変更前</th><th class="text-end">変更後</th>
+        <th>理由</th><th>結果</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in logs %}
+      <tr>
+        <td><small>{{ l.executed_at[:19] if l.executed_at else '' }}</small></td>
+        <td><code>{{ l.seller_sku }}</code></td>
+        <td class="text-end">¥{{ "{:,}".format(l.old_price|int) if l.old_price else '-' }}</td>
+        <td class="text-end">¥{{ "{:,}".format(l.new_price|int) if l.new_price else '-' }}</td>
+        <td><small>{{ l.reason }}</small></td>
+        <td>
+          {% if l.error_message == 'DRY_RUN' %}
+            <span class="badge bg-secondary">DRY RUN</span>
+          {% elif l.success %}
+            <span class="badge bg-success">成功</span>
+          {% else %}
+            <span class="badge bg-danger" title="{{ l.error_message }}">失敗</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="text-muted">まだログがありません</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

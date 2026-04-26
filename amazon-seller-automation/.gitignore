@@ -1,0 +1,34 @@
+# 秘密情報
+.env
+.env.*
+!.env.template
+secrets/*
+!secrets/.gitkeep
+
+# ログ
+logs/*
+!logs/.gitkeep
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# 仮想環境
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp

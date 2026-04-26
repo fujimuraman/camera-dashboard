@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-4 col-sm-10">
+    <div class="card mt-5">
+      <div class="card-body">
+        <h3 class="card-title text-center">📷 {{ shop_name }}</h3>
+        <form method="post">
+          <div class="mb-3">
+            <label class="form-label">ユーザー名</label>
+            <input type="text" name="username" class="form-control" autofocus>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">パスワード</label>
+            <input type="password" name="password" class="form-control">
+          </div>
+          <button class="btn btn-primary w-100">ログイン</button>
+        </form>
+      </div>
+    </div>
+
+    {# パスワードを忘れた場合の対処（折り畳み） #}
+    <div class="card mt-3">
+      <div class="card-body small">
+        <a class="text-muted" data-bs-toggle="collapse" href="#forgotHelp" role="button"
+           aria-expanded="false" aria-controls="forgotHelp"
+           style="text-decoration:none;">
+          ❓ パスワードを忘れた場合
+        </a>
+        <div class="collapse mt-2" id="forgotHelp">
+          <p class="mb-2">
+            Web 画面からはリセットできません（セキュリティのため）。
+            <strong>サーバー側で以下のコマンドを実行</strong> してください：
+          </p>
+          <pre class="bg-light p-2 rounded mb-2"><code>cd fuji-dashboard
+python reset_password.py &lt;ユーザー名&gt; &lt;新パスワード&gt;</code></pre>
+          <p class="text-muted mb-0">
+            例: <code>python reset_password.py admin newpass1234</code><br>
+            ホスト（サーバー）にアクセスできる管理者のみ実行可能。
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

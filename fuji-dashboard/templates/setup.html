@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}初期セットアップ{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-6 col-sm-10">
+    <div class="card mt-4">
+      <div class="card-header bg-primary text-white">
+        <h4 class="mb-0">🚀 初期セットアップ</h4>
+      </div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          ようこそ！このダッシュボードを使い始める前に、管理者アカウントとショップ名を設定してください。<br>
+          この画面は **初回のみ** 表示されます。
+        </p>
+
+        <form method="post">
+          <div class="mb-3">
+            <label class="form-label">ショップ名 <span class="text-danger">*</span></label>
+            <input type="text" name="shop_name" class="form-control"
+                   value="{{ shop_name }}" placeholder="例: My Camera Shop" required>
+            <small class="text-muted">ナビゲーションバーや画面に表示されます。後で「設定」画面から変更可能。</small>
+          </div>
+
+          <hr>
+
+          <div class="mb-3">
+            <label class="form-label">管理者ユーザー名 <span class="text-danger">*</span></label>
+            <input type="text" name="username" class="form-control"
+                   value="{{ username }}" placeholder="3文字以上" required minlength="3" autofocus>
+            <small class="text-muted">ログインIDです。「admin」のままでもOK。</small>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">パスワード <span class="text-danger">*</span></label>
+            <input type="password" name="password" class="form-control"
+                   placeholder="6文字以上" required minlength="6">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">パスワード（確認） <span class="text-danger">*</span></label>
+            <input type="password" name="password_confirm" class="form-control"
+                   placeholder="同じパスワードを再入力" required minlength="6">
+          </div>
+
+          <div class="alert alert-info small mb-3">
+            💡 セットアップ完了後にやること:
+            <ul class="mb-0 mt-1">
+              <li>「設定」画面で SP-API 認証情報（Refresh Token 等）を登録</li>
+              <li>必要なら「設定」画面で Google スプレッドシート ID（仕入れ台帳）を登録</li>
+              <li>「⟳ 全同期」ボタンで Amazon データを取り込み</li>
+            </ul>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-lg w-100">セットアップを完了</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

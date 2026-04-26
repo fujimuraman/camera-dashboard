@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}設定 - 再認証{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-5">
+    <div class="card mt-5">
+      <div class="card-header">🔐 設定画面 - 再認証</div>
+      <div class="card-body">
+        <p class="small text-muted mb-3">
+          セキュリティ保護のため、設定画面を開くには現在のパスワードを再入力してください。
+          認証後 15 分間は再入力不要です。
+        </p>
+        <form method="post">
+          <input type="hidden" name="form_type" value="verify">
+          <div class="mb-3">
+            <label class="form-label">現在のパスワード</label>
+            <input type="password" name="verify_password" class="form-control" required autocomplete="current-password" autofocus>
+          </div>
+          <button class="btn btn-primary">認証</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

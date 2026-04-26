@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+{% block title %}設定{% endblock %}
+{% block content %}
+<h2>⚙️ 設定</h2>
+
+<div class="alert alert-info small">
+  Polling 間隔は <strong>10 分固定</strong> です（SP-API レート制限に合わせ）。
+</div>
+
+<!-- ① 基本: ショップ名 -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="shop">
+  <div class="card">
+    <div class="card-header">🏷️ ショップ名</div>
+    <div class="card-body">
+      <p class="small text-muted mb-2">
+        画面上部ヘッダー／ログイン画面／ブラウザタイトルに表示されます。
+      </p>
+      <div class="row g-2 align-items-end">
+        <div class="col-md-6">
+          <input type="text" name="shop_name" value="{{ shop_name }}" class="form-control" maxlength="30" required>
+        </div>
+        <div class="col-md-auto">
+          <button class="btn btn-primary">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</form>
+
+<!-- ② アカウント: ログインID/パスワード変更 -->
+<div class="row g-3 mb-4">
+  <div class="col-md-6">
+    <form method="post">
+      <input type="hidden" name="form_type" value="username">
+      <div class="card h-100">
+        <div class="card-header">👤 ログインID 変更</div>
+        <div class="card-body">
+          <div class="mb-2">
+            <label class="form-label">現在の ID</label>
+            <input type="text" value="{{ current_username }}" class="form-control" readonly>
+          </div>
+          <div class="mb-2">
+            <label class="form-label">新しい ID（3文字以上）</label>
+            <input type="text" name="new_username" class="form-control" required minlength="3">
+          </div>
+          <div class="mb-2">
+            <label class="form-label">現在のパスワード <span class="text-danger">*</span></label>
+            <input type="password" name="current_password_u" class="form-control" required autocomplete="current-password">
+          </div>
+          <button class="btn btn-primary">変更</button>
+        </div>
+      </div>
+    </form>
+  </div>
+  <div class="col-md-6">
+    <form method="post">
+      <input type="hidden" name="form_type" value="password">
+      <div class="card h-100">
+        <div class="card-header">🔒 パスワード変更</div>
+        <div class="card-body">
+          <div class="mb-2">
+            <label class="form-label">現在のパスワード <span class="text-danger">*</span></label>
+            <input type="password" name="current_password" class="form-control" required autocomplete="current-password">
+          </div>
+          <div class="mb-2">
+            <label class="form-label">新しいパスワード（6文字以上）</label>
+            <input type="password" name="new_password" class="form-control" required minlength="6" autocomplete="new-password">
+          </div>
+          <div class="mb-2">
+            <label class="form-label">新しいパスワード（確認）</label>
+            <input type="password" name="confirm_password" class="form-control" required minlength="6" autocomplete="new-password">
+          </div>
+          <button class="btn btn-primary">変更</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ③ 外部連携: SP-API -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="spapi">
+  <div class="card">
+    <div class="card-header">🔑 SP-API 認証情報</div>
+    <div class="card-body">
+      <p class="small text-muted">
+        Amazon Seller Central の Developer Console で取得した値を入力。
+        既に保存済みの値はマスク表示（先頭 <code>********</code>）で、そのままにすれば変更されません。
+      </p>
+      <div class="row g-2">
+        <div class="col-md-6">
+          <label class="form-label">Seller ID</label>
+          <input type="text" name="sp_api_seller_id" value="{{ spapi.sp_api_seller_id }}" class="form-control">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">LWA App ID</label>
+          <input type="text" name="sp_api_lwa_app_id" value="{{ spapi.sp_api_lwa_app_id }}" class="form-control" autocomplete="off">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">LWA Client Secret</label>
+          <input type="password" name="sp_api_lwa_client_secret" value="{{ spapi.sp_api_lwa_client_secret }}" class="form-control" autocomplete="off">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Refresh Token</label>
+          <input type="password" name="sp_api_refresh_token" value="{{ spapi.sp_api_refresh_token }}" class="form-control" autocomplete="off">
+        </div>
+      </div>
+      <button class="btn btn-primary mt-3">保存</button>
+    </div>
+  </div>
+</form>
+
+<!-- ④ 外部連携: Google スプレッドシート（仕入れ価格） -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="sheets">
+  <div class="card">
+    <div class="card-header">📊 仕入れ価格取得元（Google スプレッドシート）</div>
+    <div class="card-body">
+      <div class="alert alert-warning small">
+        ⚠️ 指定したスプレッドシートには、サービスアカウントの <strong>閲覧（読み取り）権限</strong> を付与してください。<br>
+        サービスアカウント例: <code>fuji-dashboard@xxx.iam.gserviceaccount.com</code>（この ID をスプレッドシートの「共有」で追加）
+      </div>
+      <div class="row g-2">
+        <div class="col-md-12">
+          <label class="form-label">スプレッドシート URL</label>
+          <input type="url" name="sheet_url" value="{{ sheet_url }}" class="form-control" placeholder="https://docs.google.com/spreadsheets/d/.../edit">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">SKU 列</label>
+          <input type="text" name="sheet_sku_col" value="{{ sheet_sku_col }}" class="form-control" placeholder="A">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">原価 列</label>
+          <input type="text" name="sheet_cost_col" value="{{ sheet_cost_col }}" class="form-control" placeholder="K">
+        </div>
+      </div>
+      <p class="small text-muted mt-2">列は A〜Z で指定。保存後、次の定期更新から反映されます。</p>
+      <button class="btn btn-primary mt-2">保存</button>
+    </div>
+  </div>
+</form>
+
+<!-- ⑤ 外部連携: Keepa（全体販売数推定） -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="keepa">
+  <div class="card">
+    <div class="card-header">📈 Keepa API（全体販売数推定）</div>
+    <div class="card-body">
+      <p class="small text-muted">
+        Keepa の Sales Rank Drops から、各 ASIN の <strong>30/90/180日間の推定販売数</strong>を取得し、
+        在庫一覧の「販売数 自分/全体」の全体側に表示します。
+      </p>
+      <div class="alert alert-warning small mb-3">
+        <strong>必要なもの:</strong> Keepa の有料 API key（<a href="https://keepa.com/#!api" target="_blank">https://keepa.com/#!api</a>）<br>
+        <strong>消費トークン:</strong> 1 ASIN あたり 1〜2 トークン。約 90 SKU を 24時間ごとに更新する想定なら月 2,700〜5,400 トークン消費。
+      </div>
+      <div class="row g-2 align-items-end">
+        <div class="col-md-7">
+          <label class="form-label">API key</label>
+          <input type="password" name="keepa_api_key" value="{{ keepa_api_key }}"
+                 class="form-control" autocomplete="off"
+                 placeholder="未設定">
+        </div>
+        <div class="col-md-auto">
+          <button class="btn btn-primary">保存</button>
+        </div>
+        <div class="col-md-auto">
+          <button class="btn btn-outline-info" name="sync_now" value="1"
+                  formnovalidate>📥 今すぐ同期</button>
+        </div>
+      </div>
+      <p class="small text-muted mt-2 mb-0">
+        保存後、定期 Polling（10分ごと）でも 24時間に1回まで自動同期します。
+      </p>
+    </div>
+  </div>
+</form>
+
+<!-- ⑥ 計算ルール: 利益計算ロジック -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="profit_logic">
+  <div class="card">
+    <div class="card-header">📐 利益計算ロジック（返品の扱い）</div>
+    <div class="card-body">
+      <p class="small text-muted mb-2">
+        返品商品を利益計算にどう反映するかを選択します。ダッシュボード・売上分析・経費に共通で反映。
+      </p>
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="return_model"
+               id="rm_exclude" value="exclude"
+               {% if profit_return_model == 'exclude' %}checked{% endif %}>
+        <label class="form-check-label" for="rm_exclude">
+          <strong>返品を除外</strong>（再出品で在庫に戻る運用向け・推奨）
+          <small class="text-muted d-block">
+            返品された商品は売上・仕入・手数料すべて集計から除外。Amazon が手数料を返金し、商品が在庫に戻るケースで実情に合う。
+          </small>
+        </label>
+      </div>
+      <div class="form-check mt-2">
+        <input class="form-check-input" type="radio" name="return_model"
+               id="rm_refund" value="subtract_refund"
+               {% if profit_return_model == 'subtract_refund' %}checked{% endif %}>
+        <label class="form-check-label" for="rm_refund">
+          <strong>返金を控除</strong>
+          <small class="text-muted d-block">
+            売上・仕入・手数料は総計のまま、返金額を利益から引く保守的計算。
+          </small>
+        </label>
+      </div>
+      <button class="btn btn-primary mt-3">保存</button>
+    </div>
+  </div>
+</form>
+
+<!-- ⑥ 在庫表示ルール: 価格乖離ハイライト -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="price_diverge">
+  <div class="card">
+    <div class="card-header">🎯 価格乖離ハイライト</div>
+    <div class="card-body">
+      <p class="small text-muted mb-2">
+        同コンディションの最安値より「出品価格 − 最安値 ≥ しきい値」となる商品は、在庫一覧で青色・太字で表示されます。
+      </p>
+      <div class="row g-2 align-items-end">
+        <div class="col-auto">
+          <label class="form-label small mb-1">しきい値</label>
+          <div class="yen-input">
+            <span class="yen-prefix">¥</span>
+            <input type="number" name="price_diverge_threshold"
+                   value="{{ price_diverge_threshold }}" class="form-control form-control-sm no-spin"
+                   style="max-width:120px" min="0" step="100">
+          </div>
+        </div>
+        <div class="col-auto">
+          <button class="btn btn-primary">保存</button>
+        </div>
+        <div class="col small text-muted">デフォルト ¥1,000</div>
+      </div>
+    </div>
+  </div>
+</form>
+
+<!-- ⑦ 反映方式: 出品価格の Amazon 反映タイミング -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="inline_apply">
+  <div class="card">
+    <div class="card-header">⚡ 価格変更時の Amazon 反映方式</div>
+    <div class="card-body">
+      <p class="small text-muted mb-2">
+        在庫一覧で出品価格ボックスを編集した時の動作を選択します。
+      </p>
+      <div class="form-check">
+        <input class="form-check-input" type="radio" name="inline_price_apply_mode"
+               id="ip_manual" value="manual"
+               {% if inline_price_apply_mode == 'manual' %}checked{% endif %}>
+        <label class="form-check-label" for="ip_manual">
+          <strong>手動反映（推奨）</strong>
+          <small class="text-muted d-block">
+            編集すると DB のみ更新。ヘッダーの「🔄 価格更新」ボタンで未反映分をまとめて Amazon に PATCH。
+          </small>
+        </label>
+      </div>
+      <div class="form-check mt-2">
+        <input class="form-check-input" type="radio" name="inline_price_apply_mode"
+               id="ip_auto" value="auto"
+               {% if inline_price_apply_mode == 'auto' %}checked{% endif %}>
+        <label class="form-check-label" for="ip_auto">
+          <strong>即時反映</strong>
+          <small class="text-muted d-block">
+            編集確定（Tab/Enter）と同時に Amazon Listings API へ PATCH。失敗時はアラートで通知。
+          </small>
+        </label>
+      </div>
+      <button class="btn btn-primary mt-3">保存</button>
+    </div>
+  </div>
+</form>
+
+<!-- ⑧ 自動化: 価格自動調整 -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="price_engine">
+  <div class="card">
+    <div class="card-header">💰 価格自動調整</div>
+    <div class="card-body">
+      <p class="small text-muted">
+        在庫一覧で設定した「追従モード」「高値/赤字ストッパー」に従い、15分ごとに価格を見直します。
+      </p>
+      <div class="form-check form-switch mb-3">
+        <input type="checkbox" name="auto_price_apply" id="auto_price_apply"
+               class="form-check-input" {% if auto_price_apply %}checked{% endif %}>
+        <label class="form-check-label" for="auto_price_apply">
+          Amazon への PATCH 反映を有効化（OFF の間は DB ログのみ記録）
+        </label>
+      </div>
+      <button class="btn btn-primary">保存</button>
+    </div>
+  </div>
+</form>
+
+{% endblock %}
