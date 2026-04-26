@@ -498,7 +498,7 @@ def sync_keepa_sales(asins: list[str] | None = None, limit: int | None = None,
             req = urllib.request.Request(
                 url + "?" + urllib.parse.urlencode(params),
                 headers={
-                    "User-Agent": "fuji-dashboard/1.0",
+                    "User-Agent": "seller-dashboard/1.0",
                     "Accept-Encoding": "gzip",
                 },
             )

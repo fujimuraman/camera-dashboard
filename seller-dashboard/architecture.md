@@ -1,6 +1,6 @@
 # フジカメラ ダッシュボード 設計書
 
-**プロジェクト名**: fuji-dashboard  
+**プロジェクト名**: seller-dashboard  
 **目的**: プライスター代替の自社運用ダッシュボード  
 **対象**: フジカメラ（Amazon FBA）のみ。You and Me は対象外。  
 **作成日**: 2026-04-23
@@ -398,7 +398,7 @@ def decide_new_price(sku_info, rule, competitor_data):
 
 ### 9.1 ディレクトリ構成
 ```
-C:\claude\fuji-dashboard\
+C:\claude\seller-dashboard\
 ├── architecture.md      # 本書
 ├── app.py               # Flask エントリーポイント
 ├── polling.py           # 15分毎の SP-API 同期
@@ -423,7 +423,7 @@ C:\claude\fuji-dashboard\
 
 ### 9.2 起動方法
 ```bash
-cd C:\claude\fuji-dashboard
+cd C:\claude\seller-dashboard
 python app.py            # localhost:8080
 ```
 

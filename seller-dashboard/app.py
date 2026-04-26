@@ -1,4 +1,4 @@
-"""fuji-dashboard Flask アプリケーション"""
+"""seller-dashboard Flask アプリケーション"""
 import io
 import os
 import sys

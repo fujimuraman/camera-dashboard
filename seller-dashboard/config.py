@@ -1,4 +1,4 @@
-"""fuji-dashboard 設定"""
+"""seller-dashboard 設定"""
 import os
 from pathlib import Path
 

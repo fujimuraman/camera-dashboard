@@ -1,11 +1,11 @@
-# fuji-dashboard
+# seller-dashboard
 
 フジカメラ自社運用ダッシュボード（プライスター代替）
 
 ## 起動方法
 
 ```bash
-cd C:\claude\fuji-dashboard
+cd C:\claude\seller-dashboard
 python app.py
 ```
 
