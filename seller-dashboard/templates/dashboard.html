@@ -105,6 +105,20 @@ const rgba = (hex, a) => {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
 };
+// 軸ラベル短縮: 1500000 -> 1.5M / 25000 -> 25K
+const fmtShort = (v) => {
+  const n = Number(v);
+  if (!isFinite(n)) return v;
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n/1e9).toFixed(a >= 1e10 ? 0 : 1).replace(/\.0$/, '') + 'B';
+  if (a >= 1e6) return (n/1e6).toFixed(a >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M';
+  if (a >= 1e3) return (n/1e3).toFixed(a >= 1e4 ? 0 : 1).replace(/\.0$/, '') + 'K';
+  return n.toString();
+};
+const fmtYen = (v) => {
+  const n = Number(v);
+  return isFinite(n) ? '¥' + n.toLocaleString() : v;
+};
 
 new Chart(document.getElementById('monthChart'), {
   data: {
@@ -116,11 +130,11 @@ new Chart(document.getElementById('monthChart'), {
       // 販売数（右軸 y1）棒 - 橙
       { type: 'bar',  label: '販売数', data: qty,
         backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 3 },
-      // 累計売上 線 - 濃青
+      // 累計売上 線 - 濃青（独自スケール、軸非表示）
       { type: 'line', label: '累計売上 (円)', data: cumSales,
         borderColor: C.salesCum, backgroundColor: C.salesCum,
         pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 2 },
-      // 累計利益 線 - 濃緑
+      // 累計利益 線 - 濃緑（独自スケール、軸非表示）
       { type: 'line', label: '累計利益 (円)', data: cumProfit,
         borderColor: C.profitCum, backgroundColor: C.profitCum,
         pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1 }
@@ -130,19 +144,23 @@ new Chart(document.getElementById('monthChart'), {
     responsive: true,
     maintainAspectRatio: false,
     plugins: {
-      legend: { labels: { boxWidth: 12, font: { size: 11 } } }
+      legend: { labels: { boxWidth: 12, font: { size: 11 } } },
+      tooltip: { callbacks: {
+        label: (ctx) => {
+          const lbl = ctx.dataset.label || '';
+          const v = ctx.parsed.y;
+          return /円/.test(lbl) ? `${lbl}: ${fmtYen(v)}` : `${lbl}: ${v}`;
+        }
+      }}
     },
     scales: {
       y:    { type: 'linear', position: 'left',
-              title: { display: true, text: '日次売上 (円)', color: C.sales },
-              ticks: { color: C.sales } },
-      yCum: { type: 'linear', position: 'left',
-              title: { display: true, text: '累計 売上 / 利益 (円)', color: C.salesCum },
-              ticks: { color: C.salesCum },
-              grid: { drawOnChartArea: false }, offset: true },
+              ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 6 },
+              grid: { color: 'rgba(0,0,0,0.06)' } },
+      yCum: { type: 'linear', position: 'left', display: false,
+              grid: { drawOnChartArea: false } },
       y1:   { type: 'linear', position: 'right',
-              title: { display: true, text: '販売数', color: C.qty },
-              ticks: { color: C.qty, stepSize: 1 },
+              ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 6 },
               grid: { drawOnChartArea: false } }
     }
   }
