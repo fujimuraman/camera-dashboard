@@ -560,13 +560,13 @@ def _start_scheduler(app):
             except Exception as e:
                 app.logger.error(f"Price engine error: {e}")
 
-    # Polling 間隔は 10 分固定（従来の設定値は無視）。
-    # Flask再起動でジョブの「初回」が10分後になるため、起動直後にも1回走らせる。
+    # Polling/Price Engine 間隔は config.py で集中管理（DBのpolling_intervalは未使用）。
+    # Flask再起動でジョブの「初回」が間隔後になるため、起動直後にも1回走らせる。
     from datetime import datetime as _dt, timedelta as _td
-    scheduler.add_job(job, "interval", minutes=10, id="polling", replace_existing=True,
-                      next_run_time=_dt.now() + _td(seconds=30))
-    scheduler.add_job(price_job, "interval", minutes=15, id="price_engine", replace_existing=True,
-                      next_run_time=_dt.now() + _td(seconds=60))
+    scheduler.add_job(job, "interval", minutes=config.POLLING_INTERVAL_MIN, id="polling",
+                      replace_existing=True, next_run_time=_dt.now() + _td(seconds=30))
+    scheduler.add_job(price_job, "interval", minutes=config.PRICE_ENGINE_INTERVAL_MIN, id="price_engine",
+                      replace_existing=True, next_run_time=_dt.now() + _td(seconds=60))
     scheduler.start()
     app.scheduler = scheduler
 
@@ -604,11 +604,13 @@ def create_app():
                     "WHERE success=1 ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 if row and row["finished_at"]:
-                    # ISO形式 → "MM/DD HH:MM" に整形
+                    # ISO形式（UTC保存） → JST に変換して "MM/DD HH:MM" に整形
                     try:
-                        from datetime import datetime as _dt
-                        dt = _dt.fromisoformat(row["finished_at"].split(".")[0])
-                        last_sync = dt.strftime("%m/%d %H:%M")
+                        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                        # naive な ISO 文字列を UTC として解釈し JST へ
+                        dt_utc = _dt.fromisoformat(row["finished_at"].split(".")[0]).replace(tzinfo=_tz.utc)
+                        dt_jst = dt_utc.astimezone(_tz(_td(hours=9)))
+                        last_sync = dt_jst.strftime("%m/%d %H:%M")
                     except Exception:
                         last_sync = row["finished_at"][:16].replace("T", " ")
         except Exception:
@@ -2167,6 +2169,6 @@ if __name__ == "__main__":
     _start_scheduler(app)
     print(f"🌐 http://localhost:{config.PORT}  で起動")
     print("    初回アクセスでログイン画面が出ます（admin / 起動ログのパスワード）")
-    print("    Polling は起動時＋定期実行（設定画面で変更可、デフォルト15分）")
+    print("    Polling は起動時 + 10分間隔（固定）/ Price Engine は 15分間隔")
     # debug=False にしないと APScheduler が reloader で二重起動する
     app.run(host=config.HOST, port=config.PORT, debug=False)

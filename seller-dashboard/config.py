@@ -52,8 +52,10 @@ PORT = int(os.getenv("FUJI_DASH_PORT", "8080"))
 ADMIN_USERNAME = os.getenv("FUJI_DASH_USER", "admin")
 # パスワードは .env か settings テーブルから取得
 
-# Polling 設定（デフォルト、settings テーブルで上書き可）
-DEFAULT_POLLING_INTERVAL_MIN = 15
+# Polling 設定: 10分固定（SP-API レート制限に合わせ）
+# settings テーブルの polling_interval は現状参照していない（互換のため定数のみ残置）
+POLLING_INTERVAL_MIN = 10
+PRICE_ENGINE_INTERVAL_MIN = 15
 
 # SP-API 認証情報（amazon-seller-automation の .env を使用）
 # 配布時はユーザーが SP_API_ENV_PATH を環境変数で指定する想定
