@@ -959,13 +959,15 @@ def create_app():
             d = dict(r)
             title = (d.get("title") or "")
             price = d.get("item_price") or 0
+            # Pending で item_price が NULL/0 のときは inventory.listing_price を価格基準に使う
+            price_for_fee = price if price else (d.get("inv_listing_price") or 0)
             # Amazon 手数料: SP-API Finances 確定値を優先、無ければ品種推定
             if d.get("amazon_fee_confirmed") and d.get("amazon_fee"):
                 amz_fee = d.get("amazon_fee") or 0
                 d["_fee_confirmed"] = True
             else:
                 rate = estimate_amazon_fee_rate(title, None)
-                amz_fee = round(price * rate)
+                amz_fee = round(price_for_fee * rate)
                 d["_fee_confirmed"] = False
                 d["_fee_rate"] = rate
             shipping_fee = d.get("shipping_agent_per_item") or 0
