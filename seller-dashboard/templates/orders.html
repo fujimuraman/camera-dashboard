@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}注文一覧{% endblock %}
+{% block title_suffix %} - 注文一覧{% endblock %}
 {% block content %}
 <h2>📦 注文一覧 <small class="text-muted">{{ total_count }}件{% if total_pages > 1 %}（{{ page }}/{{ total_pages }}ページ）{% endif %}</small></h2>
 
