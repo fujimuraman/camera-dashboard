@@ -86,7 +86,7 @@
         <td class="text-end">
           {% if r.order_status == 'Pending' %}
             <span class="price-pending"
-                  title="Pending（Amazon側で確定処理中）。売上未反映">
+                  title="Pending（Amazon側で確定処理中）。売上未反映{% if r.price_estimated and r.item_price %} / 在庫の出品価格から推定{% endif %}">
               ({% if r.item_price %}¥{{ "{:,}".format(r.item_price|int) }}{% else %}価格未確定{% endif %})
             </span>
           {% else %}

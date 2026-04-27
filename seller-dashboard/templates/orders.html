@@ -101,7 +101,7 @@
           <td class="text-end" data-sort-value="{{ o._display_price|int if o._display_price else -1 }}">
             {% if o.order_status == 'Pending' %}
               <span class="price-pending"
-                    title="Pending（Amazon側で確定処理中）。売上未反映">
+                    title="Pending（Amazon側で確定処理中）。売上未反映{% if o._price_estimated %} / 在庫の出品価格から推定{% endif %}">
                 ({% if o._display_price %}¥{{ "{:,}".format(o._display_price|int) }}{% else %}価格未確定{% endif %})
               </span>
             {% else %}

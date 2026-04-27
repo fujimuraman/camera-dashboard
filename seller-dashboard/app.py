@@ -695,12 +695,15 @@ def create_app():
         today = datetime.now().date().isoformat()
         with get_db() as conn:
             # 今月の売上・販売数・仕入・利益（プライスター方式）
+            # Pending用に inventory.listing_price も取得（item_price が NULL/0 のときの推定価格）
             stats_rows = conn.execute("""
                 SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
-                       oi.title, cp.cost_price, r.id AS return_id, o.order_status
+                       oi.title, cp.cost_price, r.id AS return_id, o.order_status,
+                       inv.listing_price AS listing_price
                 FROM orders o
                 JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
                 LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
+                LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
                 LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
                 WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
                   AND substr(o.purchase_date, 1, 7) = substr(?, 1, 7)
@@ -716,10 +719,11 @@ def create_app():
                 q = r["quantity_ordered"] or 0
                 p = r["item_price"] or 0
                 # Pending 注文（金額未確定、キャンセル可能性あり）は本集計対象外
-                # ただし「保留中の販売」KPI には別途集計
+                # ただし「保留中の販売」KPI には別途集計（item_price が NULL/0 なら listing_price で補完）
                 if r["order_status"] == "Pending":
                     pending_qty += q
-                    pending_sales += p * q  # item_price が NULL でも 0 加算なのでOK
+                    p_pending = p if p else (r["listing_price"] or 0)
+                    pending_sales += p_pending * q
                     continue
                 is_return = bool(r["return_id"])
                 if is_return:
@@ -838,11 +842,15 @@ def create_app():
                     "cum": cum_sales, "cum_profit": round(cum_profit),
                 })
 
-            # 最新の売れた商品10件
+            # 最新の売れた商品10件（Pendingは item_price が NULL/0 の場合 inventory.listing_price で補完）
             recent_sold = conn.execute("""
-                SELECT o.purchase_date, oi.title, oi.seller_sku, oi.item_price,
+                SELECT o.purchase_date, oi.title, oi.seller_sku,
+                       COALESCE(NULLIF(oi.item_price, 0), inv.listing_price) AS item_price,
+                       (oi.item_price IS NULL OR oi.item_price = 0) AS price_estimated,
                        o.order_status
-                FROM orders o JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+                FROM orders o
+                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+                LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
                 WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
                 ORDER BY o.purchase_date DESC LIMIT 10
             """).fetchall()
@@ -921,7 +929,7 @@ def create_app():
                        oi.amazon_fee, oi.amazon_fee_confirmed, oi.condition,
                        cp.cost_price,
                        r.id AS return_id, r.return_date, r.reason AS return_reason,
-                       inv.asin_listed_at,
+                       inv.asin_listed_at, inv.listing_price AS inv_listing_price,
                        (SELECT per_item_fee FROM shipping_agent_fees ORDER BY effective_from DESC LIMIT 1) AS shipping_agent_per_item
                 FROM orders o
                 JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
@@ -972,8 +980,14 @@ def create_app():
                 d["_display_profit"] = -shipping_fee if shipping_fee else 0
             elif is_pending or is_canceled:
                 # Pending/Canceled は仕入未計上（未確定・商品戻る）→ 仕入・利益は"-"表示
+                # Pending で price が NULL/0 の場合、inventory.listing_price を推定値として使う
                 d["_display_status"] = status_val
-                d["_display_price"] = price if not is_canceled else None
+                if is_canceled:
+                    d["_display_price"] = None
+                else:
+                    fallback = d.get("inv_listing_price") or 0
+                    d["_display_price"] = price if price else (fallback if fallback else None)
+                    d["_price_estimated"] = (not price) and bool(fallback)
                 d["_display_cost"] = None
                 d["_display_profit"] = None
                 d["_display_fee"] = (amz_fee + shipping_fee) if not is_canceled else None
