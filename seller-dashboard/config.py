@@ -56,6 +56,8 @@ ADMIN_USERNAME = os.getenv("FUJI_DASH_USER", "admin")
 # settings テーブルの polling_interval は現状参照していない（互換のため定数のみ残置）
 POLLING_INTERVAL_MIN = 10
 PRICE_ENGINE_INTERVAL_MIN = 15
+# polling_log の保持期間: これより古いレコードは1日1回 cleanup_job で削除（DB肥大化防止）
+POLLING_LOG_RETAIN_DAYS = 30
 
 # SP-API 認証情報（amazon-seller-automation の .env を使用）
 # 配布時はユーザーが SP_API_ENV_PATH を環境変数で指定する想定

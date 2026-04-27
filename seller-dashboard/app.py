@@ -560,6 +560,24 @@ def _start_scheduler(app):
             except Exception as e:
                 app.logger.error(f"Price engine error: {e}")
 
+    def cleanup_job():
+        """polling_log の古いレコード削除（DB肥大化防止）。
+        Polling 5分間隔で年10万件以上溜まるので、保持期間を超えたら削除。"""
+        with app.app_context():
+            try:
+                from datetime import datetime as _dt2, timedelta as _td2
+                cutoff = (_dt2.utcnow() - _td2(days=config.POLLING_LOG_RETAIN_DAYS)).isoformat()
+                with get_db() as conn:
+                    cur = conn.execute(
+                        "DELETE FROM polling_log WHERE started_at < ?", (cutoff,)
+                    )
+                    deleted = cur.rowcount
+                    # SQLite ファイルを縮小（VACUUM は別接続が必要）
+                if deleted:
+                    app.logger.info(f"polling_log cleanup: {deleted} rows deleted (cutoff={cutoff})")
+            except Exception as e:
+                app.logger.error(f"polling_log cleanup error: {e}")
+
     # Polling/Price Engine 間隔は config.py で集中管理（DBのpolling_intervalは未使用）。
     # Flask再起動でジョブの「初回」が間隔後になるため、起動直後にも1回走らせる。
     from datetime import datetime as _dt, timedelta as _td
@@ -567,6 +585,9 @@ def _start_scheduler(app):
                       replace_existing=True, next_run_time=_dt.now() + _td(seconds=30))
     scheduler.add_job(price_job, "interval", minutes=config.PRICE_ENGINE_INTERVAL_MIN, id="price_engine",
                       replace_existing=True, next_run_time=_dt.now() + _td(seconds=60))
+    # polling_log クリーンアップ: 1日1回実行（起動5分後に1回目）
+    scheduler.add_job(cleanup_job, "interval", days=1, id="cleanup_polling_log",
+                      replace_existing=True, next_run_time=_dt.now() + _td(minutes=5))
     scheduler.start()
     app.scheduler = scheduler
 
