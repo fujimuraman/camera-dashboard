@@ -755,19 +755,38 @@ def create_app():
                     is_lens = any(k in (r["title"] or "") for k in ["レンズ","LENS","Lens","lens"])
                     amz_fee += round(p * (0.10 if is_lens else 0.08)) * q
             ym = datetime.now().strftime("%Y-%m")
+            # 売上分析と同じ式に揃える:
+            # - other:   Amazon利用料・プラス計上を除く経費
+            # - amz_fee_from_expense: Amazon利用料（FBA保管料・サブスク等の月次経費）
             other = conn.execute(
                 "SELECT COALESCE(SUM(amount),0) FROM expenses "
                 "WHERE year_month=? AND category NOT IN ('Amazon利用料','プラス計上')",
                 (ym,),
             ).fetchone()[0] or 0
+            amz_fee_from_expense = conn.execute(
+                "SELECT COALESCE(SUM(amount),0) FROM expenses "
+                "WHERE year_month=? AND category='Amazon利用料'",
+                (ym,),
+            ).fetchone()[0] or 0
+            # 発送代行: 売上分析と同じく「base + per_item × その月の ASIN 登録数」
             ship_row = conn.execute(
-                "SELECT per_item_fee, base_fee FROM shipping_agent_fees ORDER BY effective_from DESC LIMIT 1"
+                "SELECT base_fee, per_item_fee FROM shipping_agent_fees "
+                "WHERE effective_from <= ? ORDER BY effective_from DESC LIMIT 1",
+                (ym + "-01",),
             ).fetchone()
-            ship_total = ((ship_row["base_fee"] if ship_row else 0) or 0) + \
-                         ((ship_row["per_item_fee"] if ship_row else 0) or 0) * qty_total
+            ship_base_val = ((ship_row["base_fee"] if ship_row else 0) or 0)
+            ship_per_val = ((ship_row["per_item_fee"] if ship_row else 0) or 0)
+            ym_slash = ym.replace("-", "/")
+            asin_registered_in_month = conn.execute(
+                "SELECT COUNT(*) FROM inventory "
+                "WHERE substr(asin_listed_at, 1, 7) = ?",
+                (ym_slash,),
+            ).fetchone()[0] or 0
+            ship_total = ship_base_val + ship_per_val * asin_registered_in_month
             # 売上分析と同じ式: 売上 + 送料 − 仕入 − Amazon手数料 − 経費 − 発送代行 − プロモ − 返金
+            amz_fee_total = amz_fee + amz_fee_from_expense
             profit = (sales_total + shipping_income
-                      - cost_total - amz_fee - other - ship_total
+                      - cost_total - amz_fee_total - other - ship_total
                       - promotion_total - refund_amt)
             # 現在の在庫数（Active かつ qty>0 の SKU 数 ＝ 出品中商品数）
             inventory_count = conn.execute("""
