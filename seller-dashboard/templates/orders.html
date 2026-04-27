@@ -5,26 +5,26 @@
   <small class="text-muted">{{ total_count }}件{% if total_pages > 1 %}（{{ page }}/{{ total_pages }}ページ）{% endif %}</small>
 </h2>
 {% if count_breakdown %}
-<div class="mb-3 small">
-  <span class="text-muted me-2">期間内の内訳:</span>
+<div class="mb-3 d-flex align-items-center flex-wrap gap-2 count-breakdown">
+  <span class="text-muted">期間内の内訳:</span>
   <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=all"
-     class="badge bg-light text-dark text-decoration-none me-1"
+     class="badge bg-light text-dark text-decoration-none"
      title="全件">全 {{ count_breakdown.total }}</a>
   <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=shipped"
-     class="badge bg-success text-decoration-none me-1"
+     class="badge bg-success text-decoration-none"
      title="Shipped + Unshipped（売上確定／確定見込み）">✓ 確定 {{ count_breakdown.confirmed }}</a>
   <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=pending"
-     class="badge text-decoration-none me-1"
+     class="badge text-decoration-none"
      style="background:#d9a300; color:#2d2200;"
      title="Pending（Amazon側で確定処理中、売上未反映）">⏳ 保留 {{ count_breakdown.pending }}</a>
   {% if count_breakdown.returns %}
   <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=return"
-     class="badge bg-danger text-decoration-none me-1"
+     class="badge bg-danger text-decoration-none"
      title="返品">↩ 返品 {{ count_breakdown.returns }}</a>
   {% endif %}
   {% if count_breakdown.canceled %}
   <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=canceled"
-     class="badge bg-secondary text-decoration-none me-1"
+     class="badge bg-secondary text-decoration-none"
      title="キャンセル">✕ キャンセル {{ count_breakdown.canceled }}</a>
   {% endif %}
 </div>

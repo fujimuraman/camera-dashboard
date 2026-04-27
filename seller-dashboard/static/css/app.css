@@ -102,6 +102,10 @@ td.price-pending,
 td.price-pending .fee-amount,
 td.price-pending small { color: #b39450 !important; font-style: italic; cursor: help; opacity: 0.85; }
 
+/* 注文一覧 内訳バッジ: 視認性を上げる */
+.count-breakdown .badge { font-size: 0.95rem; padding: 0.45em 0.75em; font-weight: 600; }
+.count-breakdown .badge:hover { transform: translateY(-1px); transition: transform 0.1s; }
+
 /* ボタン - Apple 風 */
 .btn {
   border-radius: 8px;
