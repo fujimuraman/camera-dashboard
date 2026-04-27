@@ -88,6 +88,11 @@ body {
 .dash-returns { background: linear-gradient(135deg, #8b2c20, #6b1f16); }
 /* 在庫数（紫）*/
 .dash-inventory { background: linear-gradient(135deg, #af52de, #8e3fc1); }
+/* 保留中の販売（黄系・要注意トーン）*/
+.dash-pending { background: linear-gradient(135deg, #ffcc00, #d9a300); color: #2d2200; }
+.dash-pending .card-subtitle { color: #2d2200; opacity: 0.85; }
+/* 保留中など金額未確定セル */
+.price-pending { color: #8e6e00; font-style: italic; cursor: help; }
 
 /* ボタン - Apple 風 */
 .btn {

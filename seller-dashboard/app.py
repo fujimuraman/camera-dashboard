@@ -710,11 +710,16 @@ def create_app():
             return_model = get_setting("profit_return_model", "exclude")
             qty_total = sales_total = cost_total = amz_fee = refund_amt = 0
             return_count = 0
+            pending_qty = 0
+            pending_sales = 0  # 価格分かる Pending 分のみ加算（参考値）
             for r in stats_rows:
                 q = r["quantity_ordered"] or 0
                 p = r["item_price"] or 0
-                # Pending 注文（金額未確定、キャンセル可能性あり）は集計対象外
+                # Pending 注文（金額未確定、キャンセル可能性あり）は本集計対象外
+                # ただし「保留中の販売」KPI には別途集計
                 if r["order_status"] == "Pending":
+                    pending_qty += q
+                    pending_sales += p * q  # item_price が NULL でも 0 加算なのでOK
                     continue
                 is_return = bool(r["return_id"])
                 if is_return:
@@ -749,7 +754,8 @@ def create_app():
             """).fetchone()["c"]
             stats = {"sales_total": sales_total, "qty_total": qty_total,
                      "cost_total": cost_total, "profit": profit,
-                     "inventory_count": inventory_count}
+                     "inventory_count": inventory_count,
+                     "pending_qty": pending_qty, "pending_sales": pending_sales}
 
             returns_count = conn.execute(
                 "SELECT COUNT(*) AS c FROM returns WHERE return_date > date('now', '-30 days')"
@@ -834,9 +840,10 @@ def create_app():
 
             # 最新の売れた商品10件
             recent_sold = conn.execute("""
-                SELECT o.purchase_date, oi.title, oi.seller_sku, oi.item_price
+                SELECT o.purchase_date, oi.title, oi.seller_sku, oi.item_price,
+                       o.order_status
                 FROM orders o JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
-                WHERE o.order_status IN ('Shipped', 'Pending')
+                WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
                 ORDER BY o.purchase_date DESC LIMIT 10
             """).fetchall()
 

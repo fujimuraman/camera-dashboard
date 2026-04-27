@@ -98,7 +98,16 @@
             {% else %}—{% endif %}
           </td>
         {% else %}
-          <td class="text-end" data-sort-value="{{ o._display_price|int if o._display_price else -1 }}">¥{{ "{:,}".format(o._display_price|int) if o._display_price else '—' }}</td>
+          <td class="text-end" data-sort-value="{{ o._display_price|int if o._display_price else -1 }}">
+            {% if o.order_status == 'Pending' %}
+              <span class="price-pending"
+                    title="Pending（Amazon側で確定処理中）。売上未反映">
+                ({% if o._display_price %}¥{{ "{:,}".format(o._display_price|int) }}{% else %}価格未確定{% endif %})
+              </span>
+            {% else %}
+              {% if o._display_price %}¥{{ "{:,}".format(o._display_price|int) }}{% else %}—{% endif %}
+            {% endif %}
+          </td>
           <td class="text-end fee-cell" data-sort-value="{{ o._display_fee|int if o._display_fee else 0 }}">
             <div class="fee-row text-danger">
               <span class="fee-prefix"></span>

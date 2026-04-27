@@ -52,6 +52,16 @@
       </div>
     </div>
   </div>
+  <div class="col-md col-6">
+    <div class="card dash-card dash-pending"
+         title="Pending = Amazon側で確定処理中。価格未確定なものは売上に含まれない（参考値で表示）">
+      <div class="card-body">
+        <h6 class="card-subtitle">保留中の販売</h6>
+        <h3>{{ stats.pending_qty }} 個</h3>
+        <small>(売上 ¥{{ "{:,}".format(stats.pending_sales|int) }})</small>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="card my-3">
@@ -73,7 +83,16 @@
         <td>{{ r.purchase_date[:10] if r.purchase_date else '' }}</td>
         <td><code>{{ r.seller_sku }}</code></td>
         <td>{{ (r.title or '')[:60] }}</td>
-        <td class="text-end">¥{{ "{:,}".format(r.item_price|int) if r.item_price else '-' }}</td>
+        <td class="text-end">
+          {% if r.order_status == 'Pending' %}
+            <span class="price-pending"
+                  title="Pending（Amazon側で確定処理中）。売上未反映">
+              ({% if r.item_price %}¥{{ "{:,}".format(r.item_price|int) }}{% else %}価格未確定{% endif %})
+            </span>
+          {% else %}
+            ¥{{ "{:,}".format(r.item_price|int) if r.item_price else '-' }}
+          {% endif %}
+        </td>
       </tr>
       {% else %}
       <tr><td colspan="4" class="text-muted">データがありません。Polling を実行してください。</td></tr>
