@@ -920,7 +920,7 @@ def create_app():
             params = [period_days]
 
         with get_db() as conn:
-            # 総件数
+            # 総件数（現在のフィルタ適用後）
             count_row = conn.execute(f"""
                 SELECT COUNT(*) AS cnt
                 FROM orders o
@@ -930,6 +930,27 @@ def create_app():
             """, params).fetchone()
             total_count = count_row["cnt"] if count_row else 0
             total_pages = max(1, (total_count + per_page - 1) // per_page)
+
+            # 内訳カウント（期間フィルタのみ適用、status フィルタは外して全カテゴリ集計）
+            breakdown_rows = conn.execute(f"""
+                SELECT
+                  SUM(CASE WHEN r.id IS NOT NULL THEN 1 ELSE 0 END) AS returns,
+                  SUM(CASE WHEN r.id IS NULL AND o.order_status IN ('Shipped','Unshipped') THEN 1 ELSE 0 END) AS confirmed,
+                  SUM(CASE WHEN r.id IS NULL AND o.order_status = 'Pending' THEN 1 ELSE 0 END) AS pending,
+                  SUM(CASE WHEN r.id IS NULL AND o.order_status IN ('Canceled','Cancelled') THEN 1 ELSE 0 END) AS canceled,
+                  COUNT(*) AS total
+                FROM orders o
+                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+                LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                WHERE {date_where}
+            """, params).fetchone()
+            count_breakdown = {
+                "total": (breakdown_rows["total"] if breakdown_rows else 0) or 0,
+                "confirmed": (breakdown_rows["confirmed"] if breakdown_rows else 0) or 0,
+                "pending": (breakdown_rows["pending"] if breakdown_rows else 0) or 0,
+                "canceled": (breakdown_rows["canceled"] if breakdown_rows else 0) or 0,
+                "returns": (breakdown_rows["returns"] if breakdown_rows else 0) or 0,
+            }
             page = min(page, total_pages)
             offset = (page - 1) * per_page
 
@@ -1037,7 +1058,8 @@ def create_app():
             items.append(d)
 
         return render_template("orders.html", orders=items, status=status, days=period_days, period=period,
-                               page=page, total_pages=total_pages, total_count=total_count, per_page=per_page)
+                               page=page, total_pages=total_pages, total_count=total_count, per_page=per_page,
+                               count_breakdown=count_breakdown)
 
     # ==========================================================
     # 在庫一覧（大幅拡張）
