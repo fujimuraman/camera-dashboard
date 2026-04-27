@@ -752,8 +752,8 @@ def create_app():
                 if r["amazon_fee_confirmed"] and r["amazon_fee"]:
                     amz_fee += r["amazon_fee"]
                 else:
-                    is_lens = any(k in (r["title"] or "") for k in ["レンズ","LENS","Lens","lens"])
-                    amz_fee += round(p * (0.10 if is_lens else 0.08)) * q
+                    rate = estimate_amazon_fee_rate(r["title"] or "", None)
+                    amz_fee += round(p * rate) * q
             ym = datetime.now().strftime("%Y-%m")
             # 売上分析と同じ式に揃える:
             # - other:   Amazon利用料・プラス計上を除く経費
@@ -840,8 +840,8 @@ def create_app():
                 if row["amazon_fee_confirmed"] and row["amazon_fee"]:
                     fee = row["amazon_fee"]
                 else:
-                    is_lens = any(k in (row["title"] or "") for k in ["レンズ","LENS","Lens","lens"])
-                    fee = round(p * (0.10 if is_lens else 0.08)) * q
+                    rate = estimate_amazon_fee_rate(row["title"] or "", None)
+                    fee = round(p * rate) * q
                 b = by_day_agg.setdefault(day, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
                 b["sales"]   += p * q
                 b["qty"]     += q
