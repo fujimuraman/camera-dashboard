@@ -615,9 +615,19 @@ def create_app():
                         last_sync = row["finished_at"][:16].replace("T", " ")
         except Exception:
             pass
+        # 静的ファイルのキャッシュバスター: app.css の mtime を使う
+        asset_ver = ""
+        try:
+            import os as _os
+            css_path = _os.path.join(_os.path.dirname(__file__), "static", "css", "app.css")
+            asset_ver = str(int(_os.path.getmtime(css_path)))
+        except Exception:
+            pass
+
         return {
             "shop_name": get_setting("shop_name", "My Shop") or "My Shop",
             "last_sync": last_sync,
+            "asset_ver": asset_ver,
         }
 
     # ==========================================================
@@ -979,18 +989,25 @@ def create_app():
                 # 粗利益 = -発送代行のみ（Amazon手数料は返金される前提）
                 d["_display_profit"] = -shipping_fee if shipping_fee else 0
             elif is_pending or is_canceled:
-                # Pending/Canceled は仕入未計上（未確定・商品戻る）→ 仕入・利益は"-"表示
-                # Pending で price が NULL/0 の場合、inventory.listing_price を推定値として使う
+                # Canceled: 何もかも未確定 → 全部 None
+                # Pending: 推定値（listing_price/cost_price/手数料推定）でかっこ書き表示
                 d["_display_status"] = status_val
                 if is_canceled:
                     d["_display_price"] = None
+                    d["_display_cost"] = None
+                    d["_display_profit"] = None
+                    d["_display_fee"] = None
                 else:
                     fallback = d.get("inv_listing_price") or 0
-                    d["_display_price"] = price if price else (fallback if fallback else None)
+                    eff_price = price if price else fallback
+                    d["_display_price"] = eff_price if eff_price else None
                     d["_price_estimated"] = (not price) and bool(fallback)
-                d["_display_cost"] = None
-                d["_display_profit"] = None
-                d["_display_fee"] = (amz_fee + shipping_fee) if not is_canceled else None
+                    d["_display_cost"] = cost if cost else None
+                    d["_display_fee"] = amz_fee + shipping_fee
+                    if eff_price and cost:
+                        d["_display_profit"] = eff_price - amz_fee - shipping_fee - cost
+                    else:
+                        d["_display_profit"] = None
             else:
                 d["_display_status"] = d.get("order_status")
                 d["_display_price"] = price

@@ -75,7 +75,7 @@
             <div class="fee-row text-danger">
               <span class="fee-prefix"></span>
               <span class="fee-label">合計</span>
-              <span class="fee-amount">{% if o._display_fee %}-¥{{ "{:,}".format(o._display_fee|int) }}{% else %}—{% endif %}</span>
+              <span class="fee-amount">{% if o._display_fee %}¥{{ "{:,}".format(o._display_fee|int) }}{% else %}—{% endif %}</span>
             </div>
             <div class="fee-row" title="返品時 REVERSAL_REIMBURSEMENT で返金される想定で計上 0">
               <span class="fee-prefix"></span>
@@ -108,11 +108,17 @@
               {% if o._display_price %}¥{{ "{:,}".format(o._display_price|int) }}{% else %}—{% endif %}
             {% endif %}
           </td>
-          <td class="text-end fee-cell" data-sort-value="{{ o._display_fee|int if o._display_fee else 0 }}">
+          <td class="text-end fee-cell {% if o.order_status == 'Pending' %}price-pending{% endif %}"
+              data-sort-value="{{ o._display_fee|int if o._display_fee else 0 }}"
+              {% if o.order_status == 'Pending' %}title="Pending（推定手数料）"{% endif %}>
             <div class="fee-row text-danger">
               <span class="fee-prefix"></span>
               <span class="fee-label">合計</span>
-              <span class="fee-amount">{% if o._display_fee %}-¥{{ "{:,}".format(o._display_fee|int) }}{% else %}—{% endif %}</span>
+              <span class="fee-amount">
+                {% if o._display_fee %}
+                  {% if o.order_status == 'Pending' %}(¥{{ "{:,}".format(o._display_fee|int) }}){% else %}¥{{ "{:,}".format(o._display_fee|int) }}{% endif %}
+                {% else %}—{% endif %}
+              </span>
             </div>
             <div class="fee-row">
               <span class="fee-prefix">
@@ -128,10 +134,19 @@
               <small class="fee-amount text-muted">-¥{{ "{:,}".format(o._shipping_fee|int) if o._shipping_fee else 0 }}</small>
             </div>
           </td>
-          <td class="text-end" data-sort-value="{{ o._display_cost|int if o._display_cost else -1 }}">{% if o._display_cost %}¥{{ "{:,}".format(o._display_cost|int) }}{% else %}—{% endif %}</td>
-          <td class="text-end {% if o._display_profit and o._display_profit > 0 %}text-success{% else %}text-danger{% endif %}"
-              data-sort-value="{{ o._display_profit|int if o._display_profit is not none else -999999 }}">
-            ¥{{ "{:,}".format(o._display_profit|int) if o._display_profit is not none else '—' }}
+          <td class="text-end {% if o.order_status == 'Pending' %}price-pending{% endif %}"
+              data-sort-value="{{ o._display_cost|int if o._display_cost else -1 }}"
+              {% if o.order_status == 'Pending' %}title="Pending（仕入れ台帳から取得済の確定値）"{% endif %}>
+            {% if o._display_cost %}
+              {% if o.order_status == 'Pending' %}(¥{{ "{:,}".format(o._display_cost|int) }}){% else %}¥{{ "{:,}".format(o._display_cost|int) }}{% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td class="text-end {% if o.order_status == 'Pending' %}price-pending{% elif o._display_profit and o._display_profit > 0 %}text-success{% else %}text-danger{% endif %}"
+              data-sort-value="{{ o._display_profit|int if o._display_profit is not none else -999999 }}"
+              {% if o.order_status == 'Pending' %}title="Pending（推定値の組合せから算出）"{% endif %}>
+            {% if o._display_profit is not none %}
+              {% if o.order_status == 'Pending' %}(¥{{ "{:,}".format(o._display_profit|int) }}){% else %}¥{{ "{:,}".format(o._display_profit|int) }}{% endif %}
+            {% else %}—{% endif %}
           </td>
         {% endif %}
 

@@ -97,8 +97,11 @@ body {
 .dash-card.dash-pending h3 { font-size: 1.25rem; line-height: 1.2; }
 .dash-card.dash-pending small { font-size: 0.95rem; opacity: 0.9; }
 
-/* 保留中など金額未確定セル */
-.price-pending { color: #8e6e00; font-style: italic; cursor: help; }
+/* 保留中（金額未確定）セル: 確定値より少し薄く・斜体で識別 */
+.price-pending,
+td.price-pending,
+td.price-pending .fee-amount,
+td.price-pending small { color: #b39450 !important; font-style: italic; cursor: help; opacity: 0.85; }
 
 /* ボタン - Apple 風 */
 .btn {
