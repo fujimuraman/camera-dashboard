@@ -54,11 +54,10 @@
   </div>
   <div class="col-md col-6">
     <div class="card dash-card dash-pending"
-         title="Pending = Amazon側で確定処理中。価格未確定なものは売上に含まれない（参考値で表示）">
+         title="Pending = Amazon側で確定処理中。価格は在庫の出品価格から推定">
       <div class="card-body">
         <h6 class="card-subtitle">保留中の販売</h6>
-        <h3>{{ stats.pending_qty }} 個</h3>
-        <small>(売上 ¥{{ "{:,}".format(stats.pending_sales|int) }})</small>
+        <h3>{{ stats.pending_qty }} 個 <small class="pending-amount">(¥{{ "{:,}".format(stats.pending_sales|int) }})</small></h3>
       </div>
     </div>
   </div>

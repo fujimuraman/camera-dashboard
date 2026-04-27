@@ -93,9 +93,8 @@ body {
 .dash-card.dash-pending .card-subtitle,
 .dash-card.dash-pending h3,
 .dash-card.dash-pending small { color: #2d2200 !important; }
-/* 保留中カードは2段組のため数値を少し小さくして縦サイズを揃える */
-.dash-card.dash-pending h3 { font-size: 1.25rem; line-height: 1.2; }
-.dash-card.dash-pending small { font-size: 0.95rem; opacity: 0.9; }
+/* 個数の右に小さく金額を inline 表示（他カードと縦サイズを揃える） */
+.dash-card.dash-pending .pending-amount { font-size: 0.7rem; font-weight: 500; opacity: 0.85; margin-left: 4px; white-space: nowrap; }
 
 /* 保留中（金額未確定）セル: 確定値より少し薄く・斜体で識別 */
 .price-pending,
