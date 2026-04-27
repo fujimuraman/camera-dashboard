@@ -704,10 +704,11 @@ def create_app():
     def dashboard():
         today = datetime.now().date().isoformat()
         with get_db() as conn:
-            # 今月の売上・販売数・仕入・利益（プライスター方式）
+            # 今月の売上・販売数・仕入・利益（プライスター方式 / 売上分析と同じ式）
             # Pending用に inventory.listing_price も取得（item_price が NULL/0 のときの推定価格）
             stats_rows = conn.execute("""
                 SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
+                       oi.shipping_price, oi.promotion_discount,
                        oi.title, cp.cost_price, r.id AS return_id, o.order_status,
                        inv.listing_price AS listing_price
                 FROM orders o
@@ -722,6 +723,8 @@ def create_app():
             #                   subtract_refund=プライスター方式（総計から返金額控除）
             return_model = get_setting("profit_return_model", "exclude")
             qty_total = sales_total = cost_total = amz_fee = refund_amt = 0
+            shipping_income = 0  # 売上分析と同じ式に揃える: 送料・ギフト入金
+            promotion_total = 0  # プロモーション割引（控除）
             return_count = 0
             pending_qty = 0
             pending_sales = 0  # 価格分かる Pending 分のみ加算（参考値）
@@ -744,6 +747,8 @@ def create_app():
                 qty_total += q
                 sales_total += p * q
                 cost_total += (r["cost_price"] or 0) * q
+                shipping_income += r["shipping_price"] or 0
+                promotion_total += r["promotion_discount"] or 0
                 if r["amazon_fee_confirmed"] and r["amazon_fee"]:
                     amz_fee += r["amazon_fee"]
                 else:
@@ -760,7 +765,10 @@ def create_app():
             ).fetchone()
             ship_total = ((ship_row["base_fee"] if ship_row else 0) or 0) + \
                          ((ship_row["per_item_fee"] if ship_row else 0) or 0) * qty_total
-            profit = sales_total - cost_total - amz_fee - other - ship_total - refund_amt
+            # 売上分析と同じ式: 売上 + 送料 − 仕入 − Amazon手数料 − 経費 − 発送代行 − プロモ − 返金
+            profit = (sales_total + shipping_income
+                      - cost_total - amz_fee - other - ship_total
+                      - promotion_total - refund_amt)
             # 現在の在庫数（Active かつ qty>0 の SKU 数 ＝ 出品中商品数）
             inventory_count = conn.execute("""
                 SELECT COUNT(*) AS c FROM inventory
@@ -789,6 +797,7 @@ def create_app():
                 SELECT substr(o.purchase_date, 1, 10) AS day,
                        oi.item_price, oi.quantity_ordered,
                        oi.amazon_fee, oi.amazon_fee_confirmed, oi.title,
+                       oi.shipping_price, oi.promotion_discount,
                        cp.cost_price, r.id AS return_id, o.order_status
                 FROM orders o
                 JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
@@ -814,11 +823,13 @@ def create_app():
                 else:
                     is_lens = any(k in (row["title"] or "") for k in ["レンズ","LENS","Lens","lens"])
                     fee = round(p * (0.10 if is_lens else 0.08)) * q
-                b = by_day_agg.setdefault(day, {"sales":0,"qty":0,"cost":0,"fee":0,"refund":0})
-                b["sales"] += p * q
-                b["qty"]   += q
-                b["cost"]  += (row["cost_price"] or 0) * q
-                b["fee"]   += fee
+                b = by_day_agg.setdefault(day, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
+                b["sales"]   += p * q
+                b["qty"]     += q
+                b["cost"]    += (row["cost_price"] or 0) * q
+                b["fee"]     += fee
+                b["ship_in"] += row["shipping_price"] or 0
+                b["promo"]   += row["promotion_discount"] or 0
                 if is_ret:
                     b["refund"] += p * q
             # 固定費（発送代行・その他経費）は日割りで按分
@@ -839,10 +850,13 @@ def create_app():
             cum_profit = 0
             for d in range(1, days_in_month + 1):
                 day_iso = first.replace(day=d).strftime("%Y-%m-%d")
-                b = by_day_agg.get(day_iso, {"sales":0,"qty":0,"cost":0,"fee":0,"refund":0})
+                b = by_day_agg.get(day_iso, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
                 refund_deduction = b["refund"] if rm == "subtract_refund" else 0
-                day_profit = (b["sales"] - b["cost"] - b["fee"]
-                              - ship_per_val * b["qty"] - per_day_fixed - refund_deduction)
+                # 売上分析と同じ式に揃える: + 送料、− プロモ
+                day_profit = (b["sales"] + b["ship_in"]
+                              - b["cost"] - b["fee"]
+                              - ship_per_val * b["qty"] - per_day_fixed
+                              - b["promo"] - refund_deduction)
                 cum_sales  += b["sales"]
                 cum_profit += day_profit
                 this_month.append({
