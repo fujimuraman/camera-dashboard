@@ -103,6 +103,65 @@ def patch_amazon_price(sku: str, new_price: float) -> tuple[bool, str | None]:
     return False, err
 
 
+_COND_ORDER = {"new": 5, "like_new": 4, "very_good": 3, "good": 2, "acceptable": 1}
+
+
+def _normalize_condition(cond: str | None) -> str:
+    """'New' / 'Used - Very Good' / 'very_good' 等を統一キーに正規化"""
+    if not cond:
+        return ""
+    s = cond.lower().strip()
+    # よくある日本語 / 英語表記の正規化
+    s = s.replace(" ", "_").replace("-", "_")
+    if "new" in s and "like" not in s:
+        return "new"
+    if "like" in s:
+        return "like_new"
+    if "very" in s or "very_good" in s:
+        return "very_good"
+    if "good" in s and "very" not in s:
+        return "good"
+    if "accept" in s or "可" in s:
+        return "acceptable"
+    return s
+
+
+def _min_price_from_offers(offers_json_str: str | None,
+                           *,
+                           fba_only: bool = False,
+                           condition_filter: str | None = None) -> float | None:
+    """offers_json から最低価格を計算する（min_price_fba/all を DB に保存していなくても評価できる）。
+
+    Args:
+        offers_json_str: inventory.offers_json
+        fba_only: True なら FBA 出品のみ
+        condition_filter: 自分のコンディションを渡すと同等以上のみで絞る
+    """
+    if not offers_json_str:
+        return None
+    import json as _json
+    try:
+        offers = _json.loads(offers_json_str)
+    except Exception:
+        return None
+    my_rank = _COND_ORDER.get(_normalize_condition(condition_filter), 1) if condition_filter else 0
+    candidates = []
+    for o in offers:
+        if fba_only and o.get("fulfillment") != "FBA":
+            continue
+        if my_rank:
+            rank = _COND_ORDER.get(_normalize_condition(o.get("sub_condition")), 0)
+            if rank < my_rank:
+                continue
+        t = o.get("total") or o.get("price")
+        if t:
+            try:
+                candidates.append(float(t))
+            except (TypeError, ValueError):
+                pass
+    return min(candidates) if candidates else None
+
+
 def decide_new_price(inventory_row: dict, rule_row: dict) -> tuple[float | None, str]:
     """SKU の新価格を決定（プリセット5モード + ストッパー）。
 
@@ -118,15 +177,23 @@ def decide_new_price(inventory_row: dict, rule_row: dict) -> tuple[float | None,
         return None, "現価格不明"
 
     target = None
+    my_cond = inventory_row.get("product_condition")
+    offers_json = inventory_row.get("offers_json")
     if mode == "fba_condition":
-        # 簡易実装: fba_min を使用（厳密にはコンディション別フィルタが必要）
-        target = inventory_row.get("min_price_fba")
+        # FBA 出品 × 自分のコンディション以上の最低価格
+        target = _min_price_from_offers(offers_json, fba_only=True, condition_filter=my_cond)
+        if not target:
+            target = inventory_row.get("min_price_fba")  # フォールバック
     elif mode == "all_condition":
-        target = inventory_row.get("min_price_all")
+        target = _min_price_from_offers(offers_json, fba_only=False, condition_filter=my_cond)
+        if not target:
+            target = inventory_row.get("min_price_all")
     elif mode == "fba_min":
-        target = inventory_row.get("min_price_fba")
+        target = _min_price_from_offers(offers_json, fba_only=True)
+        if not target:
+            target = inventory_row.get("min_price_fba")
     elif mode == "all_min":
-        target = inventory_row.get("min_price_all")
+        target = inventory_row.get("min_price_all") or _min_price_from_offers(offers_json, fba_only=False)
     elif mode == "cart":
         target = inventory_row.get("cart_price")
     else:
