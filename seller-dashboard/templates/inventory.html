@@ -34,10 +34,8 @@
   <table class="table table-sm table-hover inv-table" id="invTable">
     <thead class="table-light">
       <tr>
-        <th data-sort title="商品の代表画像（Amazon Catalog より自動取得）">画像</th>
-        <th data-sort data-type="date" title="この ASIN を Amazon に出品した日（出品開始日）">登録日</th>
-        <th data-sort data-type="date" title="出品価格を最後に変更した日">更新日</th>
-        <th data-sort title="Amazon ASIN（クリックで商品ページへ）">ASIN</th>
+        <th data-sort data-type="date" title="上段=ASINをAmazonに出品した日（登録日）/ 下段=出品価格を最後に変更した日（更新日）">登録 / 更新</th>
+        <th data-sort title="商品画像（上）と Amazon ASIN（下）。クリックで商品ページへ">ASIN</th>
         <th data-sort title="SKU と商品名">SKU / 商品名</th>
         <th data-sort data-type="cond" title="出品コンディション（新品〜可）。クリックで状態順ソート">状態</th>
         <th data-sort data-type="num" class="text-end" title="現在の Amazon 出品価格（編集→ 設定の反映方式に従い即時 or「価格更新」ボタンで Amazon に反映）">出品価格</th>
@@ -57,21 +55,30 @@
       {% for r in inventory %}
       {% set fee = (r._amazon_fee or 0) + (r.shipping_agent_per_item or 0) %}
       <tr data-sku="{{ r.seller_sku }}" id="row-{{ r.seller_sku }}">
-        <td>
-          {% if r.main_image_url %}
-          <img src="{{ r.main_image_url }}" class="inv-thumb" alt="" loading="lazy">
-          {% else %}
-          <span class="inv-thumb-placeholder" title="画像未取得">—</span>
-          {% endif %}
+        <td data-sort-value="{{ r.asin_listed_at or '' }}">
+          <div class="date-stacked">
+            <div><span class="date-label">登録</span> <span class="date-value">{{ r.asin_listed_at[:10] if r.asin_listed_at else '-' }}</span></div>
+            <div><span class="date-label">更新</span> <span class="date-value text-muted">{{ r.price_updated_at[:10] if r.price_updated_at else '-' }}</span></div>
+          </div>
         </td>
-        <td><small>{{ r.asin_listed_at[:10] if r.asin_listed_at else '' }}</small></td>
-        <td><small>{{ r.price_updated_at[:10] if r.price_updated_at else '' }}</small></td>
         <td>
           {% if r._amazon_url %}
-          <a href="{{ r._amazon_url }}" target="_blank" title="{{ r.asin }}">
+          <a href="{{ r._amazon_url }}" target="_blank" title="{{ r.asin }}" class="text-decoration-none">
+            {% if r.main_image_url %}
+            <img src="{{ r.main_image_url }}" class="inv-thumb-sm" alt="" loading="lazy">
+            {% else %}
+            <span class="inv-thumb-placeholder" style="width:32px;height:32px;font-size:0.65rem;display:block;margin-bottom:2px;" title="画像未取得">—</span>
+            {% endif %}
             <small>{{ r.asin }}</small>
           </a>
-          {% else %}<small>{{ r.asin }}</small>{% endif %}
+          {% else %}
+          {% if r.main_image_url %}
+          <img src="{{ r.main_image_url }}" class="inv-thumb-sm" alt="" loading="lazy">
+          {% else %}
+          <span class="inv-thumb-placeholder" style="width:32px;height:32px;font-size:0.65rem;display:block;margin-bottom:2px;">—</span>
+          {% endif %}
+          <small>{{ r.asin }}</small>
+          {% endif %}
         </td>
         <td>
           <code>{{ r.seller_sku }}</code>{% if r.has_cart %}<span class="cart-badge" title="カート獲得中">カート</span>{% endif %}
