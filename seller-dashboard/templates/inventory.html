@@ -305,9 +305,12 @@ function parseCell(td, type) {
       return isNaN(n) ? -Infinity : n;
     }
     if (type === 'date') {
-      if (!v) return -Infinity;
-      const d = Date.parse(v);
-      return isNaN(d) ? -Infinity : d;
+      if (!v) return '';
+      // 多様な形式（'2026/04/20 13:36:22 JST' / '2026-04-25T00:33:36' 等）から
+      // YYYY-MM-DD だけを抽出して文字列ソート（ISO 風なので文字列比較で順序維持）
+      const m = String(v).match(/(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+      if (!m) return '';
+      return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
     }
     const n = parseFloat(v);
     return isNaN(n) ? v : n;
