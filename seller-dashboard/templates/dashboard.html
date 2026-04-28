@@ -171,16 +171,26 @@ new Chart(document.getElementById('monthChart'), {
         }
       }}
     },
-    scales: {
-      y:    { type: 'linear', position: 'left',
-              ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 6 },
-              grid: { color: 'rgba(0,0,0,0.06)' } },
-      yCum: { type: 'linear', position: 'left', display: false,
+    scales: (() => {
+      // 画面幅で軸構成を切替: Webは左2軸（広いので余裕）/ スマホは累計軸非表示
+      const isWide = window.matchMedia('(min-width: 768px)').matches;
+      return {
+        y:    { type: 'linear', position: 'left',
+                ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 6 },
+                grid: { color: 'rgba(0,0,0,0.06)' },
+                title: isWide ? { display: true, text: '日次売上', color: C.sales } : { display: false } },
+        yCum: isWide
+          ? { type: 'linear', position: 'left',
+              ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 6 },
+              grid: { drawOnChartArea: false }, offset: true,
+              title: { display: true, text: '累計 売上/利益', color: C.salesCum } }
+          : { type: 'linear', position: 'left', display: false,
               grid: { drawOnChartArea: false } },
-      y1:   { type: 'linear', position: 'right',
-              ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 6 },
-              grid: { drawOnChartArea: false } }
-    }
+        y1:   { type: 'linear', position: 'right',
+                ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 6 },
+                grid: { drawOnChartArea: false } }
+      };
+    })()
   }
 });
 </script>

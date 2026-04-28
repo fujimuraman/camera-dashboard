@@ -95,17 +95,26 @@
 </ul>
 
 <div class="tab-content pt-3">
+  {# 2軸表示でスマホでもグラフが圧縮されないよう、横スクロール可能な枠で囲む #}
   <div class="tab-pane fade {% if tab=='monthly' %}show active{% endif %}" id="tab-monthly">
-    <div style="position:relative; height:60vw; max-height:380px; min-height:240px;"><canvas id="chMonthly"></canvas></div>
+    <div style="overflow-x:auto;">
+      <div style="position:relative; height:60vw; max-height:380px; min-height:240px; min-width:640px;"><canvas id="chMonthly"></canvas></div>
+    </div>
   </div>
   <div class="tab-pane fade {% if tab=='daily' %}show active{% endif %}" id="tab-daily">
-    <div style="position:relative; height:60vw; max-height:380px; min-height:240px;"><canvas id="chDaily"></canvas></div>
+    <div style="overflow-x:auto;">
+      <div style="position:relative; height:60vw; max-height:380px; min-height:240px; min-width:640px;"><canvas id="chDaily"></canvas></div>
+    </div>
   </div>
   <div class="tab-pane fade {% if tab=='dow' %}show active{% endif %}" id="tab-dow">
-    <div style="position:relative; height:60vw; max-height:380px; min-height:240px;"><canvas id="chDow"></canvas></div>
+    <div style="overflow-x:auto;">
+      <div style="position:relative; height:60vw; max-height:380px; min-height:240px; min-width:640px;"><canvas id="chDow"></canvas></div>
+    </div>
   </div>
   <div class="tab-pane fade {% if tab=='hour' %}show active{% endif %}" id="tab-hour">
-    <div style="position:relative; height:60vw; max-height:380px; min-height:240px;"><canvas id="chHour"></canvas></div>
+    <div style="overflow-x:auto;">
+      <div style="position:relative; height:60vw; max-height:380px; min-height:240px; min-width:640px;"><canvas id="chHour"></canvas></div>
+    </div>
   </div>
 </div>
 
@@ -163,8 +172,15 @@ function mkChart(id, data, withCum) {
       borderColor: C.profitCum, backgroundColor: C.profitCum,
       pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1
     });
-    scales.yCum = { type: 'linear', position: 'left', display: false,
-                    grid: { drawOnChartArea: false } };
+    // 売上分析は常に左2軸表示（Webは画面が広い、スマホは横スクロールあり）
+    scales.yCum = {
+      type: 'linear', position: 'left',
+      ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 6 },
+      grid: { drawOnChartArea: false }, offset: true,
+      title: { display: true, text: '累計 売上/利益', color: C.salesCum }
+    };
+    // 日次売上軸にもタイトル付与（2軸構成では識別しやすくする）
+    scales.y.title = { display: true, text: '日次売上', color: C.sales };
   }
   return new Chart(document.getElementById(id), {
     data: { labels: data.map(d => d.k), datasets: datasets },
