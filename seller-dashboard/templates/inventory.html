@@ -34,7 +34,7 @@
   <table class="table table-sm table-hover inv-table" id="invTable">
     <thead class="table-light">
       <tr>
-        <th data-sort data-type="date" title="上段=ASINをAmazonに出品した日（登録日）/ 下段=出品価格を最後に変更した日（更新日）">登録 / 更新</th>
+        <th data-sort data-type="date" title="上段=ASINをAmazonに出品した日（登録日）/ 下段=出品価格を最後に変更した日（更新日）">登録<br>更新</th>
         <th data-sort title="商品画像（上）と Amazon ASIN（下）。クリックで商品ページへ">ASIN</th>
         <th data-sort title="SKU と商品名">SKU / 商品名</th>
         <th data-sort data-type="cond" title="出品コンディション（新品〜可）。クリックで状態順ソート">状態</th>
@@ -57,8 +57,8 @@
       <tr data-sku="{{ r.seller_sku }}" id="row-{{ r.seller_sku }}">
         <td data-sort-value="{{ r.asin_listed_at or '' }}">
           <div class="date-stacked">
-            <div><span class="date-label">登録</span> <span class="date-value">{{ r.asin_listed_at[:10] if r.asin_listed_at else '-' }}</span></div>
-            <div><span class="date-label">更新</span> <span class="date-value text-muted">{{ r.price_updated_at[:10] if r.price_updated_at else '-' }}</span></div>
+            <div class="date-value" title="登録: {{ r.asin_listed_at[:10] if r.asin_listed_at else '-' }}">{{ r.asin_listed_at[:10] if r.asin_listed_at else '-' }}</div>
+            <div class="date-value text-muted" title="更新: {{ r.price_updated_at[:10] if r.price_updated_at else '-' }}">{{ r.price_updated_at[:10] if r.price_updated_at else '-' }}</div>
           </div>
         </td>
         <td>
