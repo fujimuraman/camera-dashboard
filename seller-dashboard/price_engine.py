@@ -129,12 +129,14 @@ def _normalize_condition(cond: str | None) -> str:
 def _min_price_from_offers(offers_json_str: str | None,
                            *,
                            fba_only: bool = False,
+                           cart_only: bool = False,
                            condition_filter: str | None = None) -> float | None:
     """offers_json から最低価格を計算する（min_price_fba/all を DB に保存していなくても評価できる）。
 
     Args:
         offers_json_str: inventory.offers_json
         fba_only: True なら FBA 出品のみ
+        cart_only: True ならカート獲得オファーのみ（is_cart=True）
         condition_filter: 自分のコンディションを渡すと同等以上のみで絞る
     """
     if not offers_json_str:
@@ -148,6 +150,8 @@ def _min_price_from_offers(offers_json_str: str | None,
     candidates = []
     for o in offers:
         if fba_only and o.get("fulfillment") != "FBA":
+            continue
+        if cart_only and not o.get("is_cart"):
             continue
         if my_rank:
             rank = _COND_ORDER.get(_normalize_condition(o.get("sub_condition")), 0)
@@ -195,7 +199,10 @@ def decide_new_price(inventory_row: dict, rule_row: dict) -> tuple[float | None,
     elif mode == "all_min":
         target = inventory_row.get("min_price_all") or _min_price_from_offers(offers_json, fba_only=False)
     elif mode == "cart":
-        target = inventory_row.get("cart_price")
+        # まず offers_json から is_cart=True のオファー価格を取得
+        target = _min_price_from_offers(offers_json, cart_only=True)
+        if not target:
+            target = inventory_row.get("cart_price")
     else:
         return None, f"unknown mode: {mode}"
 
