@@ -40,14 +40,14 @@
         <th data-sort data-type="cond" title="出品コンディション（新品〜可）。クリックで状態順ソート">状態</th>
         <th data-sort data-type="num" class="text-end" title="現在の Amazon 出品価格（編集→ 設定の反映方式に従い即時 or「価格更新」ボタンで Amazon に反映）">出品価格</th>
         <th data-sort data-type="num" class="text-end" title="表示優先: ① カート価格 🛒 ② 「良い」以上の最安値（可は除外）。ホバーで全出品の一覧">最低価格</th>
-        <th data-sort data-type="num" class="text-end" title="上段=出品数 (同コンディション/全体)、下段=販売数 (自分の累計/Keepa推定の過去90日全体)。Keepa側はAPI key設定後に表示">出品数<br>販売数</th>
+        <th data-sort data-type="num" class="text-end" title="上段=出品数 (同コンディション/全体)、下段=販売数 (自分の累計/Keepa推定の過去90日全体)。Keepa側はAPI key設定後に表示"><span class="th-stack">出品数<br>販売数</span></th>
         <th data-sort title="価格自動調整のルール。15分ごとに評価し、設定で有効化されていれば Amazon に反映">追従モード</th>
         <th data-sort data-type="num" class="text-end" title="ストッパー（上限/下限）。追従モードで決まる新価格を、高値で頭打ち・赤字未満なら据え置き">
-          <span class="text-primary">高値</span><br><span class="text-danger">赤字</span>
+          <span class="th-stack"><span class="text-primary">高値</span><br><span class="text-danger">赤字</span></span>
         </th>
         <th data-sort data-type="num" class="text-end" title="商品の原価（仕入れ台帳の K列より）。手動編集も可、次の台帳同期で上書きされる場合あり">仕入値</th>
         <th data-sort data-type="num" class="text-end" title="手数料 = Amazon手数料（過去実売の確定値があればその平均、無ければレンズ=10% / カメラ=8% で推定）+ 発送代行手数料（1商品あたり）">手数料</th>
-        <th data-sort data-type="num" class="text-end" title="粗利益 = 出品価格 − 手数料 − 仕入値 ／ 利益率 = 粗利益 ÷ 出品価格">粗利益<br>利益率</th>
+        <th data-sort data-type="num" class="text-end" title="粗利益 = 出品価格 − 手数料 − 仕入値 ／ 利益率 = 粗利益 ÷ 出品価格"><span class="th-stack">粗利益<br>利益率</span></th>
         <th title="Keepa（外部サイト）で価格推移グラフを開く">Keepa</th>
       </tr>
     </thead>
@@ -299,6 +299,16 @@ function parseCell(td, type) {
   // 優先: data-sort-value があればそれを使う（状態カスタム順など）
   if (td.dataset && td.dataset.sortValue !== undefined) {
     const v = td.dataset.sortValue;
+    // type に応じて変換（空文字は最下位扱い）
+    if (type === 'num') {
+      const n = parseFloat(v);
+      return isNaN(n) ? -Infinity : n;
+    }
+    if (type === 'date') {
+      if (!v) return -Infinity;
+      const d = Date.parse(v);
+      return isNaN(d) ? -Infinity : d;
+    }
     const n = parseFloat(v);
     return isNaN(n) ? v : n;
   }
@@ -314,7 +324,6 @@ function parseCell(td, type) {
     return isNaN(d) ? -Infinity : d;
   }
   if (type === 'cond') {
-    // data-sort-value が無い場合のフォールバック
     return raw;
   }
   return raw;
