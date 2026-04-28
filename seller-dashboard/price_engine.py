@@ -151,8 +151,9 @@ def _min_price_from_offers(offers_json_str: str | None,
                            fba_only: bool = False,
                            cart_only: bool = False,
                            condition_filter: str | None = None,
-                           condition_match: str = "same") -> float | None:
-    """offers_json から最低価格を計算する（min_price_fba/all を DB に保存していなくても評価できる）。
+                           condition_match: str = "same",
+                           exclude_acceptable: bool = True) -> float | None:
+    """offers_json から最低価格を計算する。
 
     Args:
         offers_json_str: inventory.offers_json
@@ -161,7 +162,9 @@ def _min_price_from_offers(offers_json_str: str | None,
         condition_filter: 自分のコンディション。None なら状態フィルタ無効
         condition_match: condition_filter 指定時の比較方法
             "same"           = 完全同一コンディションのみ（既定 = 'XXX_condition' モード用）
-            "same_or_better" = 同等以上（自分が very_good なら new も含む）
+            "same_or_better" = 同等以上
+        exclude_acceptable: True (既定) なら acceptable / poor のオファーは除外。
+            ユーザー方針「最低品質帯は比較対象に含めない（自分の品位が下がるため）」。
     """
     if not offers_json_str:
         return None
@@ -178,8 +181,11 @@ def _min_price_from_offers(offers_json_str: str | None,
             continue
         if cart_only and not o.get("is_cart"):
             continue
+        other_norm = _normalize_condition(o.get("sub_condition"))
+        # acceptable / poor を除外
+        if exclude_acceptable and other_norm == "acceptable":
+            continue
         if my_norm:
-            other_norm = _normalize_condition(o.get("sub_condition"))
             if condition_match == "same":
                 if other_norm != my_norm:
                     continue
