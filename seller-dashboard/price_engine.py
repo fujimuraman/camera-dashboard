@@ -105,14 +105,33 @@ def patch_amazon_price(sku: str, new_price: float) -> tuple[bool, str | None]:
 
 _COND_ORDER = {"new": 5, "like_new": 4, "very_good": 3, "good": 2, "acceptable": 1}
 
+# Amazon SP-API の condition_id（数値）→ サブコンディション名
+# https://developer-docs.amazon.com/sp-api/docs/inventory-and-listings#conditionid
+_COND_ID_MAP = {
+    "11": "new", "10": "new",
+    "1": "like_new",
+    "2": "very_good",
+    "3": "good",
+    "4": "acceptable",
+    "5": "acceptable",  # poor は acceptable と同じ最下位ランクで扱う
+}
+
 
 def _normalize_condition(cond: str | None) -> str:
-    """'New' / 'Used - Very Good' / 'very_good' 等を統一キーに正規化"""
+    """コンディション表記を正規化キー（new / like_new / very_good / good / acceptable）に統一。
+
+    対応する入力例:
+      - 'New' / 'Used - Very Good' / 'very_good' / 'Used; Good' （文字列）
+      - '11' / '2' / '3'（Amazon SP-API condition_id 数値文字列）
+      - 不明値 → '' を返す（呼び出し側でコンディションフィルタ無効化）
+    """
     if not cond:
         return ""
-    s = cond.lower().strip()
-    # よくある日本語 / 英語表記の正規化
-    s = s.replace(" ", "_").replace("-", "_")
+    s = str(cond).lower().strip().replace(" ", "_").replace("-", "_").replace(";", "_")
+    # 数値 ID
+    if s in _COND_ID_MAP:
+        return _COND_ID_MAP[s]
+    # 文字列パターン
     if "new" in s and "like" not in s:
         return "new"
     if "like" in s:
@@ -121,23 +140,28 @@ def _normalize_condition(cond: str | None) -> str:
         return "very_good"
     if "good" in s and "very" not in s:
         return "good"
-    if "accept" in s or "可" in s:
+    if "accept" in s or "可" in s or "poor" in s:
         return "acceptable"
-    return s
+    # 未知（"3" のような数値が _COND_ID_MAP に無い等）はフィルタ無効化のため空
+    return ""
 
 
 def _min_price_from_offers(offers_json_str: str | None,
                            *,
                            fba_only: bool = False,
                            cart_only: bool = False,
-                           condition_filter: str | None = None) -> float | None:
+                           condition_filter: str | None = None,
+                           condition_match: str = "same") -> float | None:
     """offers_json から最低価格を計算する（min_price_fba/all を DB に保存していなくても評価できる）。
 
     Args:
         offers_json_str: inventory.offers_json
         fba_only: True なら FBA 出品のみ
         cart_only: True ならカート獲得オファーのみ（is_cart=True）
-        condition_filter: 自分のコンディションを渡すと同等以上のみで絞る
+        condition_filter: 自分のコンディション。None なら状態フィルタ無効
+        condition_match: condition_filter 指定時の比較方法
+            "same"           = 完全同一コンディションのみ（既定 = 'XXX_condition' モード用）
+            "same_or_better" = 同等以上（自分が very_good なら new も含む）
     """
     if not offers_json_str:
         return None
@@ -146,17 +170,23 @@ def _min_price_from_offers(offers_json_str: str | None,
         offers = _json.loads(offers_json_str)
     except Exception:
         return None
-    my_rank = _COND_ORDER.get(_normalize_condition(condition_filter), 1) if condition_filter else 0
+    my_norm = _normalize_condition(condition_filter) if condition_filter else ""
+    my_rank = _COND_ORDER.get(my_norm, 0)
     candidates = []
     for o in offers:
         if fba_only and o.get("fulfillment") != "FBA":
             continue
         if cart_only and not o.get("is_cart"):
             continue
-        if my_rank:
-            rank = _COND_ORDER.get(_normalize_condition(o.get("sub_condition")), 0)
-            if rank < my_rank:
-                continue
+        if my_norm:
+            other_norm = _normalize_condition(o.get("sub_condition"))
+            if condition_match == "same":
+                if other_norm != my_norm:
+                    continue
+            else:  # same_or_better
+                rank = _COND_ORDER.get(other_norm, 0)
+                if rank < my_rank:
+                    continue
         t = o.get("total") or o.get("price")
         if t:
             try:
