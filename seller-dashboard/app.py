@@ -652,6 +652,19 @@ def create_app():
         }
 
     # ==========================================================
+    # ==========================================================
+    # キャッシュ制御: HTML（テンプレート）は常に最新を配信
+    # ==========================================================
+    @app.after_request
+    def _no_cache_html(response):
+        # text/html だけ no-cache（static は app.css?v=mtime のキャッシュバスタで OK）
+        ctype = response.headers.get("Content-Type", "")
+        if ctype.startswith("text/html"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     # 認証
     # ==========================================================
     @app.before_request
