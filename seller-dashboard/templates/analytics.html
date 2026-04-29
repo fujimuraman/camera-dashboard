@@ -243,13 +243,19 @@ mkChart('chHour',    {{ hour|tojson }}, false);
   const labels = Object.keys(sold);
   const data = Object.values(sold);
   const total = data.reduce((a,b) => a+b, 0);
+  // 色は右グラフ（在庫ランク S/A/B/C）と統一:
+  //   ~30日   = S 色（オレンジ）
+  //   30-60日 = A 色（緑）
+  //   60-90日 = B 色（青）
+  //   90-180日= C 色（赤）
+  //   180日超 = 灰
   new Chart(document.getElementById('chSoldRecency'), {
     type: 'doughnut',
     data: {
       labels: labels,
       datasets: [{
         data: data,
-        backgroundColor: ['#34c759', '#5ac8fa', '#ff9500', '#ff453a', '#8e8e93'],
+        backgroundColor: ['#ff8c00', '#34c759', '#0071e3', '#ff453a', '#8e8e93'],
         borderWidth: 1,
       }]
     },
@@ -277,13 +283,14 @@ mkChart('chHour',    {{ hour|tojson }}, false);
   const labels = ['S', 'A', 'B', 'C', '?'];
   const data = labels.map(k => rank[k] || 0);
   const total = data.reduce((a,b) => a+b, 0);
+  // 色は左グラフ（販売スピード）と統一: S/A/B/C ランクバッジと同じ色
   new Chart(document.getElementById('chRank'), {
     type: 'doughnut',
     data: {
       labels: labels.map(k => `ランク ${k}`),
       datasets: [{
         data: data,
-        backgroundColor: ['#ff8c00', '#34c759', '#0071e3', '#ff453a', '#bbbbbb'],
+        backgroundColor: ['#ff8c00', '#34c759', '#0071e3', '#ff453a', '#8e8e93'],
         borderWidth: 1,
       }]
     },
