@@ -190,18 +190,19 @@ function mkChart(id, data, withCum) {
           ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 6 },
           grid: { drawOnChartArea: false } }
   };
+  // ※ Chart.js は dataset.order の昇順で凡例を並べるため、表示順に番号を振る
+  // 凡例順: 累計売上(1) / 累計利益(2) / 前同期間累計売上(3) / 日次売上(4) / 販売数(5)
   if (withCum) {
     datasets.push({
       type: 'line', label: '累計売上 (円)', data: data.map(d => d.cum),
       borderColor: C.salesCum, backgroundColor: C.salesCum,
-      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 2
+      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1
     });
     datasets.push({
       type: 'line', label: '累計利益 (円)', data: data.map(d => d.cum_profit || 0),
       borderColor: C.profitCum, backgroundColor: C.profitCum,
-      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1
+      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 2
     });
-    // 前同期間 累計売上（点線・グレー）— サーバから cum_prev で渡す
     if (data.length && data[0].cum_prev !== undefined) {
       datasets.push({
         type: 'line', label: '前同期間 累計売上 (' + (window.PREV_LABEL || '前期') + ')',
@@ -209,7 +210,7 @@ function mkChart(id, data, withCum) {
         borderColor: 'rgba(120, 120, 120, 0.7)',
         backgroundColor: 'rgba(120, 120, 120, 0.7)',
         borderDash: [6, 4], pointRadius: 0, tension: 0.2,
-        yAxisID: 'yCum', order: 0
+        yAxisID: 'yCum', order: 3
       });
     }
     scales.yCum = {
@@ -220,14 +221,13 @@ function mkChart(id, data, withCum) {
     };
     scales.y.title = { display: true, text: '日次売上', color: C.sales };
   }
-  // 棒グラフは累計線の後ろに（凡例順通り）
   datasets.push({
     type: 'bar', label: '日次売上 (円)', data: data.map(d => d.sales),
     backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4
   });
   datasets.push({
     type: 'bar', label: '販売数', data: data.map(d => d.qty),
-    backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 3
+    backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 5
   });
   return new Chart(document.getElementById(id), {
     data: { labels: data.map(d => d.k), datasets: datasets },
