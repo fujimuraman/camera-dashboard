@@ -177,14 +177,11 @@ const fmtYen = (v) => {
   const n = Number(v);
   return isFinite(n) ? '¥' + n.toLocaleString() : v;
 };
+window.PREV_LABEL = {{ prev_label|tojson }};
 
 function mkChart(id, data, withCum) {
-  const datasets = [
-    { type: 'bar', label: '日次売上 (円)', data: data.map(d => d.sales),
-      backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4 },
-    { type: 'bar', label: '販売数', data: data.map(d => d.qty),
-      backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 3 },
-  ];
+  // 凡例順を ダッシュボード と統一: 累計売上 → 累計利益 → 前期間累計売上 → 日次売上 → 販売数
+  const datasets = [];
   const scales = {
     y:  { type: 'linear', position: 'left',
           ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 6 },
@@ -204,16 +201,34 @@ function mkChart(id, data, withCum) {
       borderColor: C.profitCum, backgroundColor: C.profitCum,
       pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1
     });
-    // 売上分析は常に左2軸表示（Webは画面が広い、スマホは横スクロールあり）
+    // 前同期間 累計売上（点線・グレー）— サーバから cum_prev で渡す
+    if (data.length && data[0].cum_prev !== undefined) {
+      datasets.push({
+        type: 'line', label: '前同期間 累計売上 (' + (window.PREV_LABEL || '前期') + ')',
+        data: data.map(d => d.cum_prev || 0),
+        borderColor: 'rgba(120, 120, 120, 0.7)',
+        backgroundColor: 'rgba(120, 120, 120, 0.7)',
+        borderDash: [6, 4], pointRadius: 0, tension: 0.2,
+        yAxisID: 'yCum', order: 0
+      });
+    }
     scales.yCum = {
       type: 'linear', position: 'left',
       ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 6 },
       grid: { drawOnChartArea: false }, offset: true,
       title: { display: true, text: '累計 売上/利益', color: C.salesCum }
     };
-    // 日次売上軸にもタイトル付与（2軸構成では識別しやすくする）
     scales.y.title = { display: true, text: '日次売上', color: C.sales };
   }
+  // 棒グラフは累計線の後ろに（凡例順通り）
+  datasets.push({
+    type: 'bar', label: '日次売上 (円)', data: data.map(d => d.sales),
+    backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4
+  });
+  datasets.push({
+    type: 'bar', label: '販売数', data: data.map(d => d.qty),
+    backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 3
+  });
   return new Chart(document.getElementById(id), {
     data: { labels: data.map(d => d.k), datasets: datasets },
     options: {

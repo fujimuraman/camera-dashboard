@@ -148,28 +148,24 @@ const fmtYen = (v) => {
 new Chart(document.getElementById('monthChart'), {
   data: {
     labels: labels,
+    // 凡例順: 累計売上 / 累計利益 / 前月累計売上 / 日次売上 / 販売数
     datasets: [
-      // 日次売上（左軸 y）棒 - 青
-      { type: 'bar',  label: '日次売上 (円)', data: sales,
-        backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4 },
-      // 販売数（右軸 y1）棒 - 橙
-      { type: 'bar',  label: '販売数', data: qty,
-        backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 3 },
-      // 累計売上 線 - 濃青（独自スケール、軸非表示）
       { type: 'line', label: '累計売上 (円)', data: cumSales,
         borderColor: C.salesCum, backgroundColor: C.salesCum,
         pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 2 },
-      // 累計利益 線 - 濃緑（独自スケール、軸非表示）
       { type: 'line', label: '累計利益 (円)', data: cumProfit,
         borderColor: C.profitCum, backgroundColor: C.profitCum,
         pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1 },
-      // 前月 累計売上 線（点線・グレー、モチベ比較用）
       { type: 'line', label: '前月 累計売上 (' + prevYmLabel + ')',
         data: prevCumSales,
         borderColor: 'rgba(120, 120, 120, 0.7)',
         backgroundColor: 'rgba(120, 120, 120, 0.7)',
         borderDash: [6, 4], pointRadius: 0, tension: 0.2,
-        yAxisID: 'yCum', order: 0 }
+        yAxisID: 'yCum', order: 0 },
+      { type: 'bar', label: '日次売上 (円)', data: sales,
+        backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4 },
+      { type: 'bar', label: '販売数', data: qty,
+        backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 3 }
     ]
   },
   options: {

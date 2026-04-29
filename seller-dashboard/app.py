@@ -1576,6 +1576,31 @@ def create_app():
             start_date = now.replace(day=1).strftime("%Y-%m-%d")
             end_date   = now.strftime("%Y-%m-%d")
 
+        # ----- 前同期間（モチベ比較用、累計売上線に重ねる）-----
+        # this  → 前月 / prev → 前々月 / year → 前年 / custom → 同じ期間長の直前
+        from datetime import date as _date
+        _sd = _date.fromisoformat(start_date)
+        _ed = _date.fromisoformat(end_date)
+        if preset == "this":
+            _prev_first = (_sd - timedelta(days=1)).replace(day=1)
+            _prev_end = _sd - timedelta(days=1)
+            prev_label = _prev_first.strftime("%Y年%m月").replace("年0", "年")
+        elif preset == "prev":
+            _prev_first = (_sd - timedelta(days=1)).replace(day=1)
+            _prev_end = _sd - timedelta(days=1)
+            prev_label = _prev_first.strftime("%Y年%m月").replace("年0", "年")
+        elif preset == "year":
+            _prev_first = _sd.replace(year=_sd.year - 1)
+            _prev_end = _ed.replace(year=_ed.year - 1)
+            prev_label = f"{_sd.year - 1}年"
+        else:  # custom
+            _len = (_ed - _sd).days + 1
+            _prev_end = _sd - timedelta(days=1)
+            _prev_first = _prev_end - timedelta(days=_len - 1)
+            prev_label = f"{_prev_first} 〜 {_prev_end}"
+        prev_start_date = _prev_first.strftime("%Y-%m-%d")
+        prev_end_date = _prev_end.strftime("%Y-%m-%d")
+
         with get_db() as conn:
             # （日別/月別/曜日別/時間帯別のデータは下部で Python 集計するため SQL グループは不要）
             params = (start_date, end_date)
@@ -1841,6 +1866,46 @@ def create_app():
             })
             cur += timedelta(days=1)
 
+        # ----- 前期間の日別累計（daily/monthly と重ねるため）-----
+        with get_db() as _conn2:
+            _prev_rows = _conn2.execute("""
+                SELECT substr(o.purchase_date, 1, 10) AS day,
+                       substr(o.purchase_date, 1, 7) AS ym,
+                       oi.item_price, oi.quantity_ordered, r.id AS return_id, o.order_status
+                FROM orders o
+                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+                LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+                  AND substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
+            """, (prev_start_date, prev_end_date)).fetchall()
+        prev_by_day = {}
+        prev_by_month = {}
+        for _r in _prev_rows:
+            if _r["order_status"] == "Pending":
+                continue
+            if return_model == "exclude" and _r["return_id"]:
+                continue
+            _q = _r["quantity_ordered"] or 0
+            _p = _r["item_price"] or 0
+            prev_by_day[_r["day"]] = prev_by_day.get(_r["day"], 0) + _p * _q
+            prev_by_month[_r["ym"]] = prev_by_month.get(_r["ym"], 0) + _p * _q
+        # daily に対応する前期間の同インデックス日の累計を埋める
+        prev_cum_list = []
+        _prev_cur = datetime.strptime(prev_start_date, "%Y-%m-%d")
+        _prev_end = datetime.strptime(prev_end_date, "%Y-%m-%d")
+        _cum = 0
+        while _prev_cur <= _prev_end:
+            _cum += prev_by_day.get(_prev_cur.strftime("%Y-%m-%d"), 0)
+            prev_cum_list.append(_cum)
+            _prev_cur += timedelta(days=1)
+        for i, d in enumerate(daily):
+            if i < len(prev_cum_list):
+                d["cum_prev"] = prev_cum_list[i]
+            elif prev_cum_list:
+                d["cum_prev"] = prev_cum_list[-1]  # 前期間が短ければ最終値で延長
+            else:
+                d["cum_prev"] = 0
+
         # 月別
         monthly = []
         for k in sorted(by_month.keys()):
@@ -1849,6 +1914,21 @@ def create_app():
             per_month_exp = (ship_base + (other_exp / max(1, len(ym_set))))
             prof = _profit_of(b, per_month_exp)
             monthly.append({"k": k, "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
+        # 月別: 前期間（年なら前年）の月別売上を同じ月数で並べる
+        prev_ym_sorted = sorted(prev_by_month.keys())
+        for i, m in enumerate(monthly):
+            if i < len(prev_ym_sorted):
+                m["cum_prev"] = prev_by_month[prev_ym_sorted[i]]
+            else:
+                m["cum_prev"] = 0
+        # monthly は累計でなく月別なので、cum_prev を「前期間の同じ月の売上」に
+        # ただし daily の cum_prev は累計表示だから違う意味で使われる
+        # → daily と monthly で意味が違うのは混乱の元、monthly でも累計を渡す
+        _prev_cum_m = 0
+        for i, m in enumerate(monthly):
+            if i < len(prev_ym_sorted):
+                _prev_cum_m += prev_by_month[prev_ym_sorted[i]]
+            m["cum_prev"] = _prev_cum_m
 
         # 曜日別（0=日～6=土）: 固定費は按分しない（集計目的）
         dow_labels = ["日", "月", "火", "水", "木", "金", "土"]
@@ -2000,6 +2080,7 @@ def create_app():
             monthly_summaries=monthly_summaries,
             sold_buckets=sold_buckets,
             rank_buckets=rank_buckets,
+            prev_label=prev_label,
         )
 
     # ==========================================================
