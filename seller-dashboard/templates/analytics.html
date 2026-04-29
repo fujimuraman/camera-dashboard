@@ -240,8 +240,9 @@ mkChart('chHour',    {{ hour|tojson }}, false);
 {% if sold_buckets %}
 {
   const sold = {{ sold_buckets|tojson }};
-  const labels = Object.keys(sold);
-  const data = Object.values(sold);
+  // tojson が sort_keys=True で並び替えてしまうため、明示的な順序を JS 側で固定する
+  const labels = ['~30日', '30-60日', '60-90日', '90-180日', '180日超'];
+  const data = labels.map(k => sold[k] || 0);
   const total = data.reduce((a,b) => a+b, 0);
   // 色は右グラフ（在庫ランク S/A/B/C）と統一:
   //   ~30日   = S 色（オレンジ）
