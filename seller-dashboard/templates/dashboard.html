@@ -104,12 +104,19 @@
 {% block scripts %}
 <script>
 const thisMonth = {{ this_month|tojson }};
+const prevMonth = {{ prev_month|tojson }};
+const prevYmLabel = {{ prev_ym_label|tojson }};
 const labels = thisMonth.map(d => d.d + '日');
 const sales      = thisMonth.map(d => d.sales);
 const qty        = thisMonth.map(d => d.qty);
 const cumSales   = thisMonth.map(d => d.cum);
 const profit     = thisMonth.map(d => d.profit);
 const cumProfit  = thisMonth.map(d => d.cum_profit);
+// 前月の同じ日数までの累計（当月日数より前月が短ければ最終値で延長、長ければ切り詰め）
+const prevCumSales = labels.map((_, i) => {
+  if (i < prevMonth.length) return prevMonth[i].cum;
+  return prevMonth.length ? prevMonth[prevMonth.length - 1].cum : 0;
+});
 
 // KPIカードと揃える色（売上=青 / 販売数=橙 / 仕入=赤 / 利益=緑）
 const C = {
@@ -155,7 +162,14 @@ new Chart(document.getElementById('monthChart'), {
       // 累計利益 線 - 濃緑（独自スケール、軸非表示）
       { type: 'line', label: '累計利益 (円)', data: cumProfit,
         borderColor: C.profitCum, backgroundColor: C.profitCum,
-        pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1 }
+        pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1 },
+      // 前月 累計売上 線（点線・グレー、モチベ比較用）
+      { type: 'line', label: '前月 累計売上 (' + prevYmLabel + ')',
+        data: prevCumSales,
+        borderColor: 'rgba(120, 120, 120, 0.7)',
+        backgroundColor: 'rgba(120, 120, 120, 0.7)',
+        borderDash: [6, 4], pointRadius: 0, tension: 0.2,
+        yAxisID: 'yCum', order: 0 }
     ]
   },
   options: {

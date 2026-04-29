@@ -919,6 +919,40 @@ def create_app():
                     "cum": cum_sales, "cum_profit": round(cum_profit),
                 })
 
+            # ---- 前月の日別累計売上（モチベ比較用、当月チャートに重ねる）----
+            prev_last = first - timedelta(days=1)
+            prev_first = prev_last.replace(day=1)
+            days_in_prev = (first - prev_first).days
+            prev_ym = prev_first.strftime("%Y-%m")
+            prev_daily_rows = conn.execute("""
+                SELECT substr(o.purchase_date, 1, 10) AS day,
+                       oi.item_price, oi.quantity_ordered, r.id AS return_id, o.order_status
+                FROM orders o
+                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+                LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+                  AND substr(o.purchase_date, 1, 7) = ?
+            """, (prev_ym,)).fetchall()
+            prev_by_day = {}
+            for row in prev_daily_rows:
+                if row["order_status"] == "Pending":
+                    continue
+                is_ret = bool(row["return_id"])
+                if is_ret and rm == "exclude":
+                    continue
+                q = row["quantity_ordered"] or 0
+                p = row["item_price"] or 0
+                day = row["day"]
+                b = prev_by_day.setdefault(day, {"sales": 0})
+                b["sales"] += p * q
+            prev_month = []
+            prev_cum = 0
+            for d in range(1, days_in_prev + 1):
+                day_iso = prev_first.replace(day=d).strftime("%Y-%m-%d")
+                b = prev_by_day.get(day_iso, {"sales": 0})
+                prev_cum += b["sales"]
+                prev_month.append({"d": d, "cum": prev_cum})
+
             # 最新の売れた商品10件（Pendingは item_price が NULL/0 の場合 inventory.listing_price で補完）
             recent_sold = conn.execute("""
                 SELECT o.purchase_date, oi.title, oi.seller_sku,
@@ -938,6 +972,8 @@ def create_app():
             returns_count=returns_count,
             recent_sold=recent_sold,
             this_month=this_month,
+            prev_month=prev_month,
+            prev_ym_label=prev_first.strftime("%Y年%m月").replace("年0", "年"),
             year_month=datetime.now().strftime("%Y年%-m月") if os.name != 'nt' else datetime.now().strftime("%Y年%m月").replace("年0", "年"),
         )
 
