@@ -184,9 +184,8 @@
           </div>
           <div class="mt-1">
             {% if r._keepa_url %}
-            <a href="{{ r._keepa_url }}" target="_blank" title="Keepa で価格推移を見る">
-              <img src="{{ url_for('static', filename='img/keepa.svg') }}" class="keepa-icon" alt="Keepa">
-            </a>
+            <a href="{{ r._keepa_url }}" target="_blank" class="keepa-link"
+               title="Keepa で価格推移を見る">Keepa</a>
             {% endif %}
           </div>
         </td>

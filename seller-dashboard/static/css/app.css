@@ -197,6 +197,15 @@ td.price-pending small { color: #b39450 !important; font-style: italic; cursor: 
 .rank-B { background: linear-gradient(135deg, #5ac8fa, #0071e3); color: white; }
 .rank-C { background: linear-gradient(135deg, #ff9f0a, #ff453a); color: white; }
 .rank-unknown { background: #e5e5e5; color: #888; }
+
+/* 分析列の Keepa リンク（テキスト） */
+.keepa-link {
+  font-size: 0.72rem;
+  color: var(--bs-primary, #0071e3);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+}
+.keepa-link:hover { text-decoration: underline; }
 .inv-thumb-placeholder {
   display: inline-flex;
   align-items: center;
