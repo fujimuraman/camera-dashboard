@@ -1927,39 +1927,79 @@ def create_app():
         # 各 ASIN の BSR 履歴を月別に集約 → 中央値を算出 → 全在庫で月別中央値
         # スコア = max(0, 100 - 10 × log10(BSR))   数字が大きいほど市場活況
         import math as _math
+        import json as _json_bsr
         with get_db() as _conn3:
-            _bsr_rows = _conn3.execute(
+            _bsr_rows = [r["bsr_history_json"] for r in _conn3.execute(
                 "SELECT bsr_history_json FROM inventory "
-                "WHERE status LIKE 'Active%' AND quantity > 0 AND bsr_history_json IS NOT NULL"
-            ).fetchall()
-        market_score_by_ym = {}  # ym -> [median_bsr_per_asin, ...]
-        for _r in _bsr_rows:
+                "WHERE bsr_history_json IS NOT NULL AND bsr_history_json != '[]'"
+            ).fetchall()]
             try:
-                hist = json.loads(_r["bsr_history_json"] or "[]")
-            except Exception:
+                from config import DB_PATH as _DBP
+                _diag = _conn3.execute(
+                    "SELECT COUNT(*) AS c FROM inventory WHERE bsr_history_json IS NOT NULL"
+                ).fetchone()
+                with open(r"C:\claude\seller-dashboard\logs\market_debug.log", "a", encoding="utf-8") as _f:
+                    _f.write(f"  DB_PATH={_DBP} bsr_rows={len(_bsr_rows)} hist_total={_diag['c']}\n")
+                    if _bsr_rows:
+                        _sample = _bsr_rows[0] or ""
+                        _f.write(f"  sample0 len={len(_sample)} head={_sample[:100]}\n")
+            except Exception as _e:
+                pass
+        market_score_by_ym = {}  # ym -> [median_bsr_per_asin, ...]
+        _dbg_cnt = {"rows":0, "hist_items":0, "valid_items":0, "asins_with_ym":0}
+        _exc_log = []
+        for _r in _bsr_rows:
+            _dbg_cnt["rows"] += 1
+            try:
+                hist = _json_bsr.loads(_r or "[]")
+            except Exception as _je:
+                if len(_exc_log) < 3:
+                    _exc_log.append(f"{type(_je).__name__}: {_je}")
                 continue
+            if _dbg_cnt["rows"] <= 2:
+                _exc_log.append(f"row{_dbg_cnt['rows']} type={type(_r).__name__} histtype={type(hist).__name__} histlen={len(hist) if hasattr(hist,'__len__') else '?'}")
             asin_by_ym = {}  # ym -> [rank, ...]
             for h in hist:
+                _dbg_cnt["hist_items"] += 1
                 _date = h.get("date") or ""
                 _rank = h.get("rank")
                 if not _date or not _rank or _rank <= 0:
                     continue
+                _dbg_cnt["valid_items"] += 1
                 _ym = _date[:7]
                 asin_by_ym.setdefault(_ym, []).append(_rank)
+            if asin_by_ym:
+                _dbg_cnt["asins_with_ym"] += 1
             for _ym, _ranks in asin_by_ym.items():
                 if not _ranks:
                     continue
                 _med = sorted(_ranks)[len(_ranks) // 2]  # その商品のその月中央値
                 market_score_by_ym.setdefault(_ym, []).append(_med)
-        # 各月で全在庫の中央値 → スコア化
+        # 各月で全在庫の中央値 → 原始スコア化
         ym_score = {}
         for _ym, _meds in market_score_by_ym.items():
             if not _meds:
                 continue
             _sorted = sorted(_meds)
             _global_med = _sorted[len(_sorted) // 2]
-            _score = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
-            ym_score[_ym] = {"score": round(_score, 1), "median_bsr": _global_med}
+            _raw = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
+            ym_score[_ym] = {"raw": _raw, "median_bsr": _global_med}
+        # 過去5年（直近60ヶ月）の min/max を取得し 10-90 にスケーリング
+        from datetime import date as _date_cls
+        _today = _date_cls.today()
+        _cutoff_y = _today.year - 5
+        _cutoff_m = _today.month
+        _recent_raws = [v["raw"] for k, v in ym_score.items()
+                        if (int(k[:4]), int(k[5:7])) >= (_cutoff_y, _cutoff_m)]
+        if _recent_raws and len(_recent_raws) >= 2:
+            _rmin, _rmax = min(_recent_raws), max(_recent_raws)
+            _span = max(0.01, _rmax - _rmin)
+            for _ym, v in ym_score.items():
+                _scaled = 10 + (v["raw"] - _rmin) / _span * 80
+                v["score"] = round(max(0, min(100, _scaled)), 1)
+        else:
+            for _ym, v in ym_score.items():
+                v["score"] = round(v["raw"], 1)
         # monthly に market_score / market_bsr を埋める
         for m in monthly:
             ks = ym_score.get(m["k"])
@@ -1969,6 +2009,18 @@ def create_app():
             else:
                 m["market_score"] = None
                 m["market_bsr"] = None
+        # DEBUG
+        try:
+            with open(r"C:\claude\seller-dashboard\logs\market_debug.log", "a", encoding="utf-8") as _f:
+                _f.write(f"{datetime.now().isoformat()} ym_score keys={sorted(ym_score.keys())[-6:]}\n")
+                _f.write(f"  monthly k+score: {[(m['k'], m.get('market_score')) for m in monthly]}\n")
+                _f.write(f"  dbg_cnt: {_dbg_cnt} market_score_by_ym keys={sorted(market_score_by_ym.keys())[-6:]}\n")
+                _f.write(f"  exc_log: {_exc_log}\n")
+        except Exception as _e2:
+            try:
+                with open(r"C:\claude\seller-dashboard\logs\market_debug.log", "a", encoding="utf-8") as _f:
+                    _f.write(f"  EXC: {_e2}\n")
+            except: pass
 
         # 曜日別（0=日～6=土）: 固定費は按分しない（集計目的）
         dow_labels = ["日", "月", "火", "水", "木", "金", "土"]
