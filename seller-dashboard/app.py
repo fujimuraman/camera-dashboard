@@ -1825,20 +1825,43 @@ def create_app():
         if request.path != "/accounting":
             try:
                 with get_db() as _c:
-                    # 1. 全期間の販売個数を購入日からのビン別集計（Pending除外、返品も含めるか return_modelに従う）
-                    _today_iso = datetime.now().date().isoformat()
+                    # 1. 販売スピード分布：ASIN登録日 → 販売日 の経過日数で集計
+                    # （Pending除外、return_model='exclude'なら返品も除外）
+                    # asin_listed_at の形式は '2026/04/20 13:36:22 JST' なので、
+                    # SQLite julianday は ISO形式で動くため Python 側で変換しながら集計
                     _sql_sold = """
-                        SELECT julianday(?) - julianday(substr(o.purchase_date, 1, 10)) AS days_ago,
-                               oi.quantity_ordered AS q, r.id AS return_id, o.order_status
+                        SELECT o.purchase_date, oi.quantity_ordered AS q,
+                               r.id AS return_id, inv.asin_listed_at
                         FROM orders o
                         JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+                        LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
                         LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
                         WHERE o.order_status IN ('Shipped', 'Unshipped')
                     """
-                    for _r in _c.execute(_sql_sold, (_today_iso,)):
+                    import re as _re
+                    def _parse_listed_at(s):
+                        if not s:
+                            return None
+                        m = _re.match(r"(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})", str(s))
+                        if not m:
+                            return None
+                        try:
+                            return datetime(int(m[1]), int(m[2]), int(m[3])).date()
+                        except ValueError:
+                            return None
+                    for _r in _c.execute(_sql_sold):
                         if return_model == "exclude" and _r["return_id"]:
                             continue
-                        d = _r["days_ago"] or 0
+                        listed = _parse_listed_at(_r["asin_listed_at"])
+                        if not listed:
+                            continue
+                        try:
+                            purchased = datetime.fromisoformat(_r["purchase_date"][:10]).date()
+                        except (TypeError, ValueError):
+                            continue
+                        d = (purchased - listed).days
+                        if d < 0:
+                            continue  # データ異常（販売日 < 登録日）はスキップ
                         q = _r["q"] or 0
                         if d <= 30:
                             sold_buckets["~30日"] += q
