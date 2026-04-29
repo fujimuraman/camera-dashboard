@@ -308,7 +308,7 @@
     <div class="card-header">💰 価格自動調整</div>
     <div class="card-body">
       <p class="small text-muted">
-        在庫一覧で設定した「追従モード」「高値/赤字ストッパー」に従い、15分ごとに価格を見直します。
+        在庫一覧で設定した「追従モード」「上限/下限ストッパー」に従い、15分ごとに価格を見直します。
       </p>
       <div class="form-check form-switch mb-3">
         <input type="checkbox" name="auto_price_apply" id="auto_price_apply"
@@ -355,8 +355,8 @@
       <div class="alert alert-warning small py-2 mb-3" id="discount-warning"
            style="{% if match_strategy in ['yen','pct'] %}{% else %}display:none;{% endif %}">
         ⚠ <strong>「安く」設定時の注意</strong>: 競合も同じツールで自動下げを始めると延々値下げが起きやすいです。
-        必ず<strong>赤字ストッパー</strong>（在庫一覧の各 SKU 行で設定 / 未設定なら仕入値が自動適用）を
-        確認してください。<br>
+        必ず<strong>下限ストッパー</strong>（在庫一覧の各 SKU 行で設定）を入力してください。
+        未設定の SKU は無制限に下がります。<br>
         ※ 自分の他出品を追いかけて延々下がる事故は <strong>自動的に防止済み</strong>
         （SP-API の SellerId で自分のオファーを除外）。
       </div>

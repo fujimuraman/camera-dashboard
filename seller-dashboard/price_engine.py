@@ -269,7 +269,7 @@ def decide_new_price(inventory_row: dict, rule_row: dict) -> tuple[float | None,
     if high and target > float(high):
         target = float(high)
     if low and target < float(low):
-        return None, f"赤字ストッパー ({low}) 未満、変更しない"
+        return None, f"下限 ({low}) 未満、変更しない"
 
     # 1円未満の差は変更なし
     if abs(target - float(current)) < 1:
@@ -325,7 +325,9 @@ def run_engine(dry_run: bool = True, apply_updates: bool = False) -> dict:
         rule = {
             "mode": r["mode"],
             "high_stopper": r["high_stopper"],
-            "low_stopper": r["low_stopper"] or r["cost_price"],  # 赤字ストッパー未指定なら仕入値
+            # 下限ストッパー: ユーザーが明示設定した値のみ。未設定なら下限なし。
+            # （以前は仕入値を自動フォールバックしていたが、隠れ仕様で気づきにくいため撤廃）
+            "low_stopper": r["low_stopper"],
             "_my_seller_id": my_seller_id,
             "_match_strategy": match_strategy,
             "_match_offset_yen": match_offset_yen,

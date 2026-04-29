@@ -42,8 +42,8 @@
         <th data-sort data-type="num" class="text-end" title="表示優先: ① カート価格 🛒 ② 「良い」以上の最安値（可は除外）。ホバーで全出品の一覧">最低価格</th>
         <th data-sort data-type="num" class="text-end" title="上段=出品数 (同コンディション/全体)、下段=販売数 (自分の累計/Keepa推定の過去90日全体)。Keepa側はAPI key設定後に表示"><span class="th-stack">出品数<br>販売数</span></th>
         <th data-sort title="競合最低価格に合わせる自動調整。15分ごとに評価し、設定ONなら Amazon に反映。&#10;★上下双方向に動きます（競合下落→値下げ、競合上昇→値上げ）。&#10;暴走防止に高値/赤字ストッパーを併用してください。">追従モード</th>
-        <th data-sort data-type="num" class="text-end" title="ストッパー（上限/下限）。追従モードで決まる新価格を、高値で頭打ち・赤字未満なら据え置き">
-          <span class="th-stack"><span class="text-primary">高値</span><br><span class="text-danger">赤字</span></span>
+        <th data-sort data-type="num" class="text-end" title="追従モードのストッパー。&#10;上限: target がこれを超えたら頭打ち（高値で売り損ねるのを防止）&#10;下限: target がこれを下回ったら変更しない（安売り防止、赤字防止）&#10;空欄=未設定（無制限に追従、暴走の可能性あり）">
+          <span class="th-stack"><span class="text-primary">上限</span><br><span class="text-danger">下限</span></span>
         </th>
         <th data-sort data-type="num" class="text-end" title="商品の原価（仕入れ台帳の K列より）。手動編集も可、次の台帳同期で上書きされる場合あり">仕入値</th>
         <th data-sort data-type="num" class="text-end" title="手数料 = Amazon手数料（過去実売の確定値があればその平均、無ければレンズ=10% / カメラ=8% で推定）+ 発送代行手数料（1商品あたり）">手数料</th>
@@ -136,16 +136,18 @@
             <input type="text" inputmode="numeric" pattern="[0-9]*"
                    class="form-control form-control-sm inv-inline no-spin inp-5 text-primary"
                    data-field="high_stopper"
-                   value="{{ r.high_stopper|int if r.high_stopper else 0 }}"
-                   title="高値ストッパー">
+                   value="{{ r.high_stopper|int if r.high_stopper else '' }}"
+                   placeholder="上限"
+                   title="上限価格: target がこれを超えたら頭打ち。空欄なら制限なし">
           </div>
           <div class="yen-input">
             <span class="yen-prefix">¥</span>
             <input type="text" inputmode="numeric" pattern="[0-9]*"
                    class="form-control form-control-sm inv-inline no-spin inp-5 text-danger"
                    data-field="low_stopper"
-                   value="{{ r.low_stopper|int if r.low_stopper else 0 }}"
-                   title="赤字ストッパー">
+                   value="{{ r.low_stopper|int if r.low_stopper else '' }}"
+                   placeholder="下限"
+                   title="下限価格: target がこれ未満なら変更しない（安売り防止）。空欄なら制限なし">
           </div>
         </td>
         <td class="text-end">
