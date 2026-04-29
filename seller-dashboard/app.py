@@ -984,8 +984,13 @@ def create_app():
     @login_required
     def orders():
         status = request.args.get("status", "all")
-        period = request.args.get("period", "this")  # this / prev / days / all
-        period_days = int(request.args.get("days", "30"))
+        # 売上分析と同じ preset を使用（this / prev / year / custom）
+        # 旧パラメータ period も後方互換で受ける
+        preset = request.args.get("preset") or request.args.get("period") or "this"
+        if preset not in ("this", "prev", "year", "custom"):
+            preset = "this"
+        custom_from = request.args.get("from", "")
+        custom_to = request.args.get("to", "")
         page = max(1, int(request.args.get("page", "1") or "1"))
         per_page = 100
 
@@ -1001,26 +1006,24 @@ def create_app():
         elif status == "return":
             status_filter = "AND r.id IS NOT NULL"
 
-        # 期間絞り込み
+        # 期間絞り込み（売上分析と同じ preset 体系）
         now_dt = datetime.now()
-        if period == "this":
+        if preset == "this":
             start_d = now_dt.replace(day=1).strftime("%Y-%m-%d")
             end_d = now_dt.strftime("%Y-%m-%d")
-            date_where = "substr(o.purchase_date, 1, 10) BETWEEN ? AND ?"
-            params = [start_d, end_d]
-        elif period == "prev":
+        elif preset == "prev":
             first_this = now_dt.replace(day=1)
             prev_last = first_this - timedelta(days=1)
             start_d = prev_last.replace(day=1).strftime("%Y-%m-%d")
             end_d = prev_last.strftime("%Y-%m-%d")
-            date_where = "substr(o.purchase_date, 1, 10) BETWEEN ? AND ?"
-            params = [start_d, end_d]
-        elif period == "all":
-            date_where = "1=1"
-            params = []
-        else:  # days (過去N日)
-            date_where = "o.purchase_date > datetime('now', '-' || ? || ' days')"
-            params = [period_days]
+        elif preset == "year":
+            start_d = now_dt.replace(month=1, day=1).strftime("%Y-%m-%d")
+            end_d = now_dt.strftime("%Y-%m-%d")
+        else:  # custom
+            start_d = custom_from or now_dt.replace(day=1).strftime("%Y-%m-%d")
+            end_d = custom_to or now_dt.strftime("%Y-%m-%d")
+        date_where = "substr(o.purchase_date, 1, 10) BETWEEN ? AND ?"
+        params = [start_d, end_d]
 
         with get_db() as conn:
             # 総件数（現在のフィルタ適用後）
@@ -1160,7 +1163,8 @@ def create_app():
 
             items.append(d)
 
-        return render_template("orders.html", orders=items, status=status, days=period_days, period=period,
+        return render_template("orders.html", orders=items, status=status,
+                               preset=preset, start_date=start_d, end_date=end_d,
                                page=page, total_pages=total_pages, total_count=total_count, per_page=per_page,
                                count_breakdown=count_breakdown)
 

@@ -4,53 +4,41 @@
 <h2>📦 注文一覧
   <small class="text-muted">{{ total_count }}件{% if total_pages > 1 %}（{{ page }}/{{ total_pages }}ページ）{% endif %}</small>
 </h2>
+{% set base_qs = 'preset=' + preset + ('&from=' + start_date + '&to=' + end_date if preset == 'custom' else '') %}
 {% if count_breakdown %}
 <div class="mb-3 d-flex align-items-center flex-wrap gap-2 count-breakdown">
   <span class="text-muted">期間内の内訳:</span>
-  <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=all"
-     class="badge bg-light text-dark text-decoration-none"
-     title="全件">全 {{ count_breakdown.total }}</a>
-  <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=shipped"
-     class="badge bg-success text-decoration-none"
-     title="Shipped + Unshipped（売上確定／確定見込み）">✓ 確定 {{ count_breakdown.confirmed }}</a>
-  <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=pending"
-     class="badge text-decoration-none"
-     style="background:#d9a300; color:#2d2200;"
-     title="Pending（Amazon側で確定処理中、売上未反映）">⏳ 保留 {{ count_breakdown.pending }}</a>
+  <a href="?{{ base_qs }}&status=all" class="badge bg-light text-dark text-decoration-none" title="全件">全 {{ count_breakdown.total }}</a>
+  <a href="?{{ base_qs }}&status=shipped" class="badge bg-success text-decoration-none" title="Shipped + Unshipped（売上確定／確定見込み）">✓ 確定 {{ count_breakdown.confirmed }}</a>
+  <a href="?{{ base_qs }}&status=pending" class="badge text-decoration-none" style="background:#d9a300; color:#2d2200;" title="Pending（Amazon側で確定処理中、売上未反映）">⏳ 保留 {{ count_breakdown.pending }}</a>
   {% if count_breakdown.returns %}
-  <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=return"
-     class="badge bg-danger text-decoration-none"
-     title="返品">↩ 返品 {{ count_breakdown.returns }}</a>
+  <a href="?{{ base_qs }}&status=return" class="badge bg-danger text-decoration-none" title="返品">↩ 返品 {{ count_breakdown.returns }}</a>
   {% endif %}
   {% if count_breakdown.canceled %}
-  <a href="?period={{ period }}{% if period=='days' %}&days={{ days }}{% endif %}&status=canceled"
-     class="badge bg-secondary text-decoration-none"
-     title="キャンセル">✕ キャンセル {{ count_breakdown.canceled }}</a>
+  <a href="?{{ base_qs }}&status=canceled" class="badge bg-secondary text-decoration-none" title="キャンセル">✕ キャンセル {{ count_breakdown.canceled }}</a>
   {% endif %}
 </div>
 {% endif %}
 
 <form class="row g-2 my-3" method="get">
   <div class="col-auto">
-    <select name="period" class="form-select" onchange="this.form.submit()">
-      <option value="this" {% if period=='this' %}selected{% endif %}>当月</option>
-      <option value="prev" {% if period=='prev' %}selected{% endif %}>前月</option>
-      <option value="days" {% if period=='days' %}selected{% endif %}>過去N日</option>
-      <option value="all"  {% if period=='all'  %}selected{% endif %}>全期間</option>
+    <select name="preset" class="form-select form-select-sm" onchange="this.form.submit()">
+      <option value="this" {% if preset=='this' %}selected{% endif %}>当月</option>
+      <option value="prev" {% if preset=='prev' %}selected{% endif %}>前月</option>
+      <option value="year" {% if preset=='year' %}selected{% endif %}>年間</option>
+      <option value="custom" {% if preset=='custom' %}selected{% endif %}>カスタム</option>
     </select>
   </div>
-  {% if period=='days' %}
+  {% if preset=='custom' %}
   <div class="col-auto">
-    <select name="days" class="form-select">
-      <option value="7" {% if days==7 %}selected{% endif %}>過去7日</option>
-      <option value="14" {% if days==14 %}selected{% endif %}>過去14日</option>
-      <option value="30" {% if days==30 %}selected{% endif %}>過去30日</option>
-      <option value="90" {% if days==90 %}selected{% endif %}>過去3ヶ月</option>
-    </select>
+    <input type="date" name="from" value="{{ start_date }}" class="form-control form-control-sm">
+  </div>
+  <div class="col-auto">
+    <input type="date" name="to"   value="{{ end_date }}"   class="form-control form-control-sm">
   </div>
   {% endif %}
   <div class="col-auto">
-    <select name="status" class="form-select">
+    <select name="status" class="form-select form-select-sm">
       <option value="all" {% if status=='all' %}selected{% endif %}>全て</option>
       <option value="shipped" {% if status=='shipped' %}selected{% endif %}>Shipped</option>
       <option value="unshipped" {% if status=='unshipped' %}selected{% endif %}>Unshipped</option>
@@ -59,8 +47,9 @@
       <option value="return" {% if status=='return' %}selected{% endif %}>Return</option>
     </select>
   </div>
-  <div class="col-auto"><button class="btn btn-primary">絞り込み</button></div>
+  <div class="col-auto"><button class="btn btn-primary btn-sm">絞り込み</button></div>
 </form>
+<div class="text-muted small mb-2">📅 {{ start_date }} 〜 {{ end_date }}</div>
 
 <div class="table-responsive">
   <table id="ordersTable" class="table table-sm table-hover">
@@ -80,7 +69,8 @@
     </thead>
     <tbody>
       {% for o in orders %}
-      <tr class="{% if o._is_return %}table-danger{% endif %}">
+      {% set _is_canceled = o.order_status in ('Canceled','Cancelled') %}
+      <tr class="{% if o._is_return %}table-danger{% elif _is_canceled %}text-muted{% endif %}">
         <td data-sort-value="{{ o.purchase_date[:10] if o.purchase_date else '' }}">{{ o.purchase_date[:10] if o.purchase_date else '' }}</td>
         <td data-sort-value="{{ o._listed_short or '' }}">
           {% if o._listed_short %}<small>{{ o._listed_short }}</small>{% else %}<small class="text-muted">—</small>{% endif %}
@@ -124,6 +114,14 @@
               ¥{{ "{:,}".format(o._display_profit|int) }}
             {% else %}—{% endif %}
           </td>
+        {% elif _is_canceled %}
+          {# キャンセル: 売上・手数料・仕入・粗利すべて発生しない（在庫として再販可能）#}
+          <td class="text-end text-muted" data-sort-value="-1" title="キャンセル: 売上発生せず">—</td>
+          <td class="text-end fee-cell text-muted" data-sort-value="0" title="キャンセル: 手数料発生せず（合計0）">
+            <div class="fee-row"><span class="fee-label">合計</span><span class="fee-amount">¥0</span></div>
+          </td>
+          <td class="text-end text-muted" data-sort-value="-1">—</td>
+          <td class="text-end text-muted" data-sort-value="0">¥0</td>
         {% else %}
           <td class="text-end" data-sort-value="{{ o._display_price|int if o._display_price else -1 }}">
             {% if o.order_status == 'Pending' %}
@@ -241,7 +239,7 @@
 
 {% if total_pages > 1 %}
 {# ページネーション。現在のフィルタ値を保持して page だけ変える #}
-{% set qs = 'period=' + period + '&status=' + status + ('&days=' + days|string if period=='days' else '') %}
+{% set qs = base_qs + '&status=' + status %}
 <nav class="mt-3">
   <ul class="pagination pagination-sm justify-content-center">
     <li class="page-item {% if page == 1 %}disabled{% endif %}">
