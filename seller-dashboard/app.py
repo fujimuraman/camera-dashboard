@@ -1993,8 +1993,26 @@ def create_app():
             elif form_type == "price_engine":
                 apply = "1" if request.form.get("auto_price_apply") == "on" else "0"
                 set_setting("auto_price_apply", apply)
+                # 追従挙動の保存
+                strategy = request.form.get("match_strategy", "match")
+                if strategy not in ("match", "yen", "pct"):
+                    strategy = "match"
+                set_setting("match_strategy", strategy)
+                # オフセット値（match の時は使われないが値は保持）
+                try:
+                    yen = max(0, int(request.form.get("match_offset_yen") or 0))
+                except (TypeError, ValueError):
+                    yen = 0
+                try:
+                    pct = max(0.0, float(request.form.get("match_offset_pct") or 0))
+                except (TypeError, ValueError):
+                    pct = 0.0
+                set_setting("match_offset_yen", str(yen))
+                set_setting("match_offset_pct", str(pct))
                 flash(
-                    "価格自動調整を " + ("有効化" if apply == "1" else "無効化") + "しました",
+                    "価格自動調整を " + ("有効化" if apply == "1" else "無効化")
+                    + f" / 追従: {strategy}"
+                    + (f" -{yen}円" if strategy == 'yen' else f" -{pct}%" if strategy == 'pct' else ""),
                     "success",
                 )
             return redirect(url_for("settings"))
@@ -2020,6 +2038,9 @@ def create_app():
             "keepa_api_key": mask(get_setting("keepa_api_key", "")),
             "keepa_updated_at": get_setting("keepa_last_sync", ""),
             "auto_price_apply": get_setting("auto_price_apply", "0") == "1",
+            "match_strategy": get_setting("match_strategy", "match"),
+            "match_offset_yen": int(get_setting("match_offset_yen", "0") or 0),
+            "match_offset_pct": float(get_setting("match_offset_pct", "0") or 0),
             "profit_return_model": get_setting("profit_return_model", "exclude"),
             "price_diverge_threshold": get_setting("price_diverge_threshold", "1000"),
             "inline_price_apply_mode": get_setting("inline_price_apply_mode", "manual"),

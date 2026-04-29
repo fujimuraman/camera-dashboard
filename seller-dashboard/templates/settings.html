@@ -317,7 +317,60 @@
           Amazon に自動反映する（OFFの間は変更ログのみ記録、Amazon側は変更されません）
         </label>
       </div>
+
+      <hr>
+      <h6 class="mb-2">追従挙動（追従対象の最低価格に対してどう設定するか）</h6>
+      <div class="mb-2">
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="match_strategy" id="ms_match" value="match"
+                 {% if match_strategy == 'match' or not match_strategy %}checked{% endif %}>
+          <label class="form-check-label" for="ms_match">
+            <strong>同額に追従</strong>（既定）— 競合最低と同じ金額にする
+          </label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="match_strategy" id="ms_yen" value="yen"
+                 {% if match_strategy == 'yen' %}checked{% endif %}>
+          <label class="form-check-label" for="ms_yen">
+            <strong>固定金額だけ安く</strong> -
+            <input type="number" name="match_offset_yen" class="form-control form-control-sm d-inline-block"
+                   style="width:90px" min="0" step="1"
+                   value="{{ match_offset_yen|int if match_offset_yen else 1 }}">
+            円安く（例: 1円下に出すとカート優位を取りやすい）
+          </label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="match_strategy" id="ms_pct" value="pct"
+                 {% if match_strategy == 'pct' %}checked{% endif %}>
+          <label class="form-check-label" for="ms_pct">
+            <strong>パーセントで安く</strong> -
+            <input type="number" name="match_offset_pct" class="form-control form-control-sm d-inline-block"
+                   style="width:90px" min="0" step="0.1"
+                   value="{{ match_offset_pct if match_offset_pct else 0.5 }}">
+            % 安く
+          </label>
+        </div>
+      </div>
+
+      <div class="alert alert-warning small py-2 mb-3" id="discount-warning"
+           style="{% if match_strategy in ['yen','pct'] %}{% else %}display:none;{% endif %}">
+        ⚠ <strong>「安く」設定時の注意</strong>: 競合も同じツールで自動下げを始めると延々値下げが起きやすいです。
+        必ず<strong>赤字ストッパー</strong>（在庫一覧の各 SKU 行で設定 / 未設定なら仕入値が自動適用）を
+        確認してください。<br>
+        ※ 自分の他出品を追いかけて延々下がる事故は <strong>自動的に防止済み</strong>
+        （SP-API の SellerId で自分のオファーを除外）。
+      </div>
+
       <button class="btn btn-primary">保存</button>
+
+      <script>
+        document.querySelectorAll('input[name="match_strategy"]').forEach(el => {
+          el.addEventListener('change', () => {
+            const w = document.getElementById('discount-warning');
+            w.style.display = (el.value === 'match') ? 'none' : '';
+          });
+        });
+      </script>
     </div>
   </div>
 </form>

@@ -19,7 +19,7 @@ from sp_api.api.listings_items.listings_items_2021_08_01 import (
 from sp_api.base import Marketplaces
 
 from config import MARKETPLACE_ID, SHOP_KEY
-from db import get_db
+from db import get_db, get_setting
 
 SHOP = SHOP_KEY
 
@@ -152,7 +152,8 @@ def _min_price_from_offers(offers_json_str: str | None,
                            cart_only: bool = False,
                            condition_filter: str | None = None,
                            condition_match: str = "same",
-                           exclude_acceptable: bool = True) -> float | None:
+                           exclude_acceptable: bool = True,
+                           exclude_seller_id: str | None = None) -> float | None:
     """offers_json から最低価格を計算する。
 
     Args:
@@ -177,6 +178,9 @@ def _min_price_from_offers(offers_json_str: str | None,
     my_rank = _COND_ORDER.get(my_norm, 0)
     candidates = []
     for o in offers:
+        # 自分のオファー除外（自分2出品の価格競争防止）
+        if exclude_seller_id and o.get("seller_id") == exclude_seller_id:
+            continue
         if fba_only and o.get("fulfillment") != "FBA":
             continue
         if cart_only and not o.get("is_cart"):
@@ -219,24 +223,27 @@ def decide_new_price(inventory_row: dict, rule_row: dict) -> tuple[float | None,
     target = None
     my_cond = inventory_row.get("product_condition")
     offers_json = inventory_row.get("offers_json")
+    # 自分の Seller ID（自分の他出品との価格戦争を防ぐため除外用）
+    my_seller_id = rule_row.get("_my_seller_id")
+    _kw = {"exclude_seller_id": my_seller_id}
     if mode == "fba_condition":
-        # FBA 出品 × 自分のコンディション以上の最低価格
-        target = _min_price_from_offers(offers_json, fba_only=True, condition_filter=my_cond)
+        # FBA 出品 × 自分のコンディションと完全同一の最低価格（自分除外）
+        target = _min_price_from_offers(offers_json, fba_only=True, condition_filter=my_cond, **_kw)
         if not target:
             target = inventory_row.get("min_price_fba")  # フォールバック
     elif mode == "all_condition":
-        target = _min_price_from_offers(offers_json, fba_only=False, condition_filter=my_cond)
+        target = _min_price_from_offers(offers_json, fba_only=False, condition_filter=my_cond, **_kw)
         if not target:
             target = inventory_row.get("min_price_all")
     elif mode == "fba_min":
-        target = _min_price_from_offers(offers_json, fba_only=True)
+        target = _min_price_from_offers(offers_json, fba_only=True, **_kw)
         if not target:
             target = inventory_row.get("min_price_fba")
     elif mode == "all_min":
-        target = inventory_row.get("min_price_all") or _min_price_from_offers(offers_json, fba_only=False)
+        target = (_min_price_from_offers(offers_json, fba_only=False, **_kw)
+                  or inventory_row.get("min_price_all"))
     elif mode == "cart":
-        # まず offers_json から is_cart=True のオファー価格を取得
-        target = _min_price_from_offers(offers_json, cart_only=True)
+        target = _min_price_from_offers(offers_json, cart_only=True, **_kw)
         if not target:
             target = inventory_row.get("cart_price")
     else:
@@ -246,6 +253,15 @@ def decide_new_price(inventory_row: dict, rule_row: dict) -> tuple[float | None,
         return None, "競合データなし"
 
     target = float(target)
+
+    # 追従挙動: settings の match_strategy で「同額 / X円安く / Y%安く」
+    strategy = rule_row.get("_match_strategy") or "match"  # match / yen / pct
+    offset_yen = float(rule_row.get("_match_offset_yen") or 0)
+    offset_pct = float(rule_row.get("_match_offset_pct") or 0)
+    if strategy == "yen" and offset_yen > 0:
+        target = target - offset_yen
+    elif strategy == "pct" and offset_pct > 0:
+        target = round(target * (1 - offset_pct / 100))
 
     # ストッパー適用
     high = rule_row.get("high_stopper")
@@ -277,7 +293,19 @@ def run_engine(dry_run: bool = True, apply_updates: bool = False) -> dict:
         "details": [],
     }
 
+    # グローバル設定から取得（自分の Seller ID + 追従挙動）
+    try:
+        from scripts.common.sp_api_client import get_seller_id
+        my_seller_id = get_seller_id(SHOP)
+    except Exception:
+        my_seller_id = None
+
     with get_db() as conn:
+        # 追従挙動の設定を取得
+        match_strategy = (get_setting("match_strategy", "match") or "match")
+        match_offset_yen = float(get_setting("match_offset_yen", "0") or 0)
+        match_offset_pct = float(get_setting("match_offset_pct", "0") or 0)
+
         rows = conn.execute("""
             SELECT inv.*, pr.mode, pr.high_stopper, pr.low_stopper, pr.active,
                    cp.cost_price
@@ -298,6 +326,10 @@ def run_engine(dry_run: bool = True, apply_updates: bool = False) -> dict:
             "mode": r["mode"],
             "high_stopper": r["high_stopper"],
             "low_stopper": r["low_stopper"] or r["cost_price"],  # 赤字ストッパー未指定なら仕入値
+            "_my_seller_id": my_seller_id,
+            "_match_strategy": match_strategy,
+            "_match_offset_yen": match_offset_yen,
+            "_match_offset_pct": match_offset_pct,
         }
         new_price, reason = decide_new_price(inv, rule)
 

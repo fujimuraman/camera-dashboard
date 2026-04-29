@@ -617,6 +617,8 @@ def sync_offers(asins: list[str] | None = None, limit: int = 60, stale_hours: in
                 pts = ((o.get("Points") or {}).get("PointsNumber")) or 0
                 sub = (o.get("SubCondition") or "").lower()
                 fulfillment = "FBA" if o.get("IsFulfilledByAmazon") else "FBM"
+                # 自分のオファーかどうか（自分2出品の価格戦争防止用）
+                seller_id = o.get("SellerId") or ""
                 parsed.append({
                     "price": float(lp) if lp is not None else None,
                     "shipping": float(shp) if shp else 0,
@@ -625,6 +627,7 @@ def sync_offers(asins: list[str] | None = None, limit: int = 60, stale_hours: in
                     "sub_condition": sub,   # new / like_new / very_good / good / acceptable
                     "fulfillment": fulfillment,
                     "is_cart": bool(o.get("IsBuyBoxWinner")),
+                    "seller_id": seller_id,
                 })
             parsed.sort(key=lambda x: x["total"] or 0)
             # min_price_all は「良い以上（= acceptable を除外）」の最安値。
