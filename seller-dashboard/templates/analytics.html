@@ -118,6 +118,36 @@
   </div>
 </div>
 
+{# === 商品分析サマリー（円グラフ 2 つ） === #}
+<div class="row mt-4 g-3">
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header py-2">
+        <strong>📦 販売実績の分布</strong>
+        <small class="text-muted ms-1" title="全期間の販売（Pending除外）を購入日からの経過日数でビン分け">— 売れた個数を新旧で内訳</small>
+      </div>
+      <div class="card-body">
+        <div style="position:relative; height:280px;">
+          <canvas id="chSoldRecency"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header py-2">
+        <strong>🎯 在庫の売れ行きランク</strong>
+        <small class="text-muted ms-1" title="現在の Active 在庫を確率モデルで分類: S(1ヶ月70%↑) / A(2ヶ月70%↑) / B(3ヶ月70%↑) / C(<70%)">— S/A/B/C で何個ずつ持っているか</small>
+      </div>
+      <div class="card-body">
+        <div style="position:relative; height:280px;">
+          <canvas id="chRank"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -205,6 +235,74 @@ mkChart('chMonthly', {{ monthly|tojson }}, false);
 mkChart('chDaily',   {{ daily|tojson }}, true);
 mkChart('chDow',     {{ dow|tojson }}, false);
 mkChart('chHour',    {{ hour|tojson }}, false);
+
+// === 円グラフ: 販売実績の分布（経過日数別） ===
+{% if sold_buckets %}
+{
+  const sold = {{ sold_buckets|tojson }};
+  const labels = Object.keys(sold);
+  const data = Object.values(sold);
+  const total = data.reduce((a,b) => a+b, 0);
+  new Chart(document.getElementById('chSoldRecency'), {
+    type: 'doughnut',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: data,
+        backgroundColor: ['#34c759', '#5ac8fa', '#ff9500', '#ff453a', '#8e8e93'],
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: {
+          label: (ctx) => {
+            const v = ctx.raw || 0;
+            const pct = total ? (v / total * 100).toFixed(1) : 0;
+            return `${ctx.label}: ${v} 個 (${pct}%)`;
+          }
+        }}
+      }
+    }
+  });
+}
+{% endif %}
+
+// === 円グラフ: 在庫の売れ行きランク S/A/B/C ===
+{% if rank_buckets %}
+{
+  const rank = {{ rank_buckets|tojson }};
+  const labels = ['S', 'A', 'B', 'C', '?'];
+  const data = labels.map(k => rank[k] || 0);
+  const total = data.reduce((a,b) => a+b, 0);
+  new Chart(document.getElementById('chRank'), {
+    type: 'doughnut',
+    data: {
+      labels: labels.map(k => `ランク ${k}`),
+      datasets: [{
+        data: data,
+        backgroundColor: ['#ff8c00', '#34c759', '#0071e3', '#ff453a', '#bbbbbb'],
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { boxWidth: 12, font: { size: 11 } } },
+        tooltip: { callbacks: {
+          label: (ctx) => {
+            const v = ctx.raw || 0;
+            const pct = total ? (v / total * 100).toFixed(1) : 0;
+            return `${ctx.label}: ${v} 個 (${pct}%)`;
+          }
+        }}
+      }
+    }
+  });
+}
+{% endif %}
 
 // タブ切替時に hidden input と URL を更新（期間変更後もアクティブタブを維持するため）
 const hiddenTab = document.getElementById('hiddenTab');

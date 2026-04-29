@@ -1819,6 +1819,69 @@ def create_app():
         # パスで描画するテンプレートを切替（同一データを2画面に分けて表示）
         _tpl = "accounting.html" if request.path == "/accounting" else "analytics.html"
 
+        # ===== 売上分析の追加グラフ（円グラフ2つ） =====
+        sold_buckets = {"~30日": 0, "30-60日": 0, "60-90日": 0, "90-180日": 0, "180日超": 0}
+        rank_buckets = {"S": 0, "A": 0, "B": 0, "C": 0, "?": 0}
+        if request.path != "/accounting":
+            try:
+                with get_db() as _c:
+                    # 1. 全期間の販売個数を購入日からのビン別集計（Pending除外、返品も含めるか return_modelに従う）
+                    _today_iso = datetime.now().date().isoformat()
+                    _sql_sold = """
+                        SELECT julianday(?) - julianday(substr(o.purchase_date, 1, 10)) AS days_ago,
+                               oi.quantity_ordered AS q, r.id AS return_id, o.order_status
+                        FROM orders o
+                        JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+                        LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                        WHERE o.order_status IN ('Shipped', 'Unshipped')
+                    """
+                    for _r in _c.execute(_sql_sold, (_today_iso,)):
+                        if return_model == "exclude" and _r["return_id"]:
+                            continue
+                        d = _r["days_ago"] or 0
+                        q = _r["q"] or 0
+                        if d <= 30:
+                            sold_buckets["~30日"] += q
+                        elif d <= 60:
+                            sold_buckets["30-60日"] += q
+                        elif d <= 90:
+                            sold_buckets["60-90日"] += q
+                        elif d <= 180:
+                            sold_buckets["90-180日"] += q
+                        else:
+                            sold_buckets["180日超"] += q
+
+                    # 2. 現在の Active 在庫の売れ行きランク分布
+                    _sql_inv = """
+                        SELECT inv.keepa_sales_90d, inv.offers_json
+                        FROM inventory inv
+                        WHERE inv.status LIKE 'Active%' AND inv.quantity > 0
+                    """
+                    import json as _j
+                    for _r in _c.execute(_sql_inv):
+                        s = _r["keepa_sales_90d"]
+                        try:
+                            n = len(_j.loads(_r["offers_json"] or "[]"))
+                        except Exception:
+                            n = 0
+                        if not s or not n:
+                            rank_buckets["?"] += 1
+                            continue
+                        p = (s / 90) / n
+                        p30 = 1 - (1 - p) ** 30
+                        p60 = 1 - (1 - p) ** 60
+                        p90 = 1 - (1 - p) ** 90
+                        if p30 >= 0.7:
+                            rank_buckets["S"] += 1
+                        elif p60 >= 0.7:
+                            rank_buckets["A"] += 1
+                        elif p90 >= 0.7:
+                            rank_buckets["B"] += 1
+                        else:
+                            rank_buckets["C"] += 1
+            except Exception as _e:
+                app.logger.warning(f"analytics extra charts: {_e}")
+
         # B/S オブジェクト + 使途不明金（期末差額）から推奨値を計算
         bs_obj = _build_bs(
             int(request.args.get("bs_year", now.year)),
@@ -1861,6 +1924,8 @@ def create_app():
             bs_years=list(range(now.year - 4, now.year + 1)),
             bs_months=list(range(1, 13)),
             monthly_summaries=monthly_summaries,
+            sold_buckets=sold_buckets,
+            rank_buckets=rank_buckets,
         )
 
     # ==========================================================
