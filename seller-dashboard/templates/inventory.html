@@ -48,7 +48,7 @@
         <th data-sort data-type="num" class="text-end" title="商品の原価（仕入れ台帳の K列より）。手動編集も可、次の台帳同期で上書きされる場合あり">仕入値</th>
         <th data-sort data-type="num" class="text-end" title="手数料 = Amazon手数料（過去実売の確定値があればその平均、無ければレンズ=10% / カメラ=8% で推定）+ 発送代行手数料（1商品あたり）">手数料</th>
         <th data-sort data-type="num" class="text-end" title="粗利益 = 出品価格 − 手数料 − 仕入値 ／ 利益率 = 粗利益 ÷ 出品価格"><span class="th-stack">粗利益<br>利益率</span></th>
-        <th title="Keepa（外部サイト）で価格推移グラフを開く">Keepa</th>
+        <th data-sort data-type="rank" title="上段: 売れ行きランク（過去90日の販売実績と現在の出品数から確率モデルで分類）&#10;下段: Keepa（外部サイト）で価格推移グラフを開く">分析</th>
       </tr>
     </thead>
     <tbody>
@@ -171,12 +171,24 @@
           </span><br>
           <small class="text-muted">{{ "%.1f"|format(r._profit_rate) }}%</small>
         </td>
-        <td class="text-center">
-          {% if r._keepa_url %}
-          <a href="{{ r._keepa_url }}" target="_blank" title="Keepa で見る">
-            <img src="{{ url_for('static', filename='img/keepa.svg') }}" class="keepa-icon" alt="Keepa">
-          </a>
-          {% endif %}
+        <td class="text-center" data-sort-value="{{ {'S': 1, 'A': 2, 'B': 3, 'C': 4}.get(r._rank, 9) }}">
+          <div>
+            {% if r._rank and r._rank != '?' %}
+            <span class="rank-badge rank-{{ r._rank }}"
+                  title="ランク {{ r._rank }}{#
+#}{% if r._rank_p30 is not none %}&#10;30日: {{ '%.0f'|format(r._rank_p30 * 100) }}% / 60日: {{ '%.0f'|format(r._rank_p60 * 100) }}% / 90日: {{ '%.0f'|format(r._rank_p90 * 100) }}%{% endif %}{#
+#}&#10;&#10;【判定基準】&#10;S: 1ヶ月で売れる確率 70%以上&#10;A: 2ヶ月で売れる確率 70%以上 (S未満)&#10;B: 3ヶ月で売れる確率 70%以上 (A未満)&#10;C: 3ヶ月で売れる確率 70%未満&#10;&#10;90日販売実績と現出品数から確率モデルで算出">{{ r._rank }}</span>
+            {% else %}
+            <span class="rank-badge rank-unknown" title="販売データ無し（Keepa未取得 or 出品数0）">—</span>
+            {% endif %}
+          </div>
+          <div class="mt-1">
+            {% if r._keepa_url %}
+            <a href="{{ r._keepa_url }}" target="_blank" title="Keepa で価格推移を見る">
+              <img src="{{ url_for('static', filename='img/keepa.svg') }}" class="keepa-icon" alt="Keepa">
+            </a>
+            {% endif %}
+          </div>
         </td>
       </tr>
       {% else %}

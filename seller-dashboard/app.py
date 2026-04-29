@@ -1242,6 +1242,30 @@ def create_app():
             d["_price_diverged"] = bool(
                 listing and same_cond_min and (listing - same_cond_min) >= diverge_threshold
             )
+
+            # 売れ行きランク（確率モデル）
+            # p_per_day = (90日販売数/90) / 出品数
+            # S: P(30日)>=70%, A: P(60日)>=70%, B: P(90日)>=70%, C: それ未満
+            sales_90d = d.get("keepa_sales_90d")
+            d["_rank"] = "?"
+            d["_rank_p30"] = d["_rank_p60"] = d["_rank_p90"] = None
+            if sales_90d and offer_count_total:
+                p_per_day = (sales_90d / 90) / offer_count_total
+                p30 = 1 - (1 - p_per_day) ** 30
+                p60 = 1 - (1 - p_per_day) ** 60
+                p90 = 1 - (1 - p_per_day) ** 90
+                d["_rank_p30"] = p30
+                d["_rank_p60"] = p60
+                d["_rank_p90"] = p90
+                if p30 >= 0.7:
+                    d["_rank"] = "S"
+                elif p60 >= 0.7:
+                    d["_rank"] = "A"
+                elif p90 >= 0.7:
+                    d["_rank"] = "B"
+                else:
+                    d["_rank"] = "C"
+
             items.append(d)
 
         return render_template("inventory.html", inventory=items, hide_zero=hide_zero,
