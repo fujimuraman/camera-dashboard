@@ -142,17 +142,8 @@
         <span class="badge bg-light text-dark ms-2" title="現在の Active 在庫を集計（期間に依存しない）">現時点</span>
       </div>
       <div class="card-body">
-        <div class="d-flex align-items-center" style="gap:1rem;">
-          <div style="position:relative; height:260px; flex:1; min-width:0;">
-            <canvas id="chRank"></canvas>
-          </div>
-          <ul class="rank-legend list-unstyled mb-0" style="font-size:0.85rem;">
-            <li title="1ヶ月で売れる確率 60%以上 — 超売れ筋"><span class="lg-dot" style="background:#ff8c00"></span>ランク S</li>
-            <li title="2ヶ月で売れる確率 60%以上（S未満） — 健全"><span class="lg-dot" style="background:#34c759"></span>ランク A</li>
-            <li title="3ヶ月で売れる確率 60%以上（A未満） — やや遅"><span class="lg-dot" style="background:#0071e3"></span>ランク B</li>
-            <li title="3ヶ月でも売れる確率 60%未満 — 滞留候補"><span class="lg-dot" style="background:#ff453a"></span>ランク C</li>
-            <li title="販売データ無し（Keepa未取得 or 出品数0）"><span class="lg-dot" style="background:#8e8e93"></span>ランク ?</li>
-          </ul>
+        <div style="position:relative; height:280px;">
+          <canvas id="chRank"></canvas>
         </div>
       </div>
     </div>
@@ -311,7 +302,14 @@ mkChart('chHour',    {{ hour|tojson }}, false);
   const data = labels.map(k => rank[k] || 0);
   const total = data.reduce((a,b) => a+b, 0);
   // 色は左グラフ（販売スピード）と統一: S/A/B/C ランクバッジと同じ色
-  // Chart.js デフォルト凡例は非表示にして、横の HTML カスタム凡例（hover で説明表示）を使う
+  // 円グラフのスライスにホバーで「個数+%+判定基準の意味」を tooltip 表示
+  const RANK_DESC = {
+    'ランク S': '1ヶ月で売れる確率 60%以上 — 超売れ筋',
+    'ランク A': '2ヶ月で売れる確率 60%以上 (S未満) — 健全',
+    'ランク B': '3ヶ月で売れる確率 60%以上 (A未満) — やや遅',
+    'ランク C': '3ヶ月でも売れる確率 60%未満 — 滞留候補',
+    'ランク ?': '販売データ無し（Keepa未取得 or 出品数0）',
+  };
   new Chart(document.getElementById('chRank'), {
     type: 'doughnut',
     data: {
@@ -325,12 +323,15 @@ mkChart('chHour',    {{ hour|tojson }}, false);
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { display: false },
+        legend: { position: 'right', labels: { boxWidth: 12, font: { size: 11 } } },
         tooltip: { callbacks: {
           label: (ctx) => {
             const v = ctx.raw || 0;
             const pct = total ? (v / total * 100).toFixed(1) : 0;
-            return `${ctx.label}: ${v} 個 (${pct}%)`;
+            return [
+              `${ctx.label}: ${v} 個 (${pct}%)`,
+              RANK_DESC[ctx.label] || '',
+            ];
           }
         }}
       }

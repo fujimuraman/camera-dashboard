@@ -207,23 +207,6 @@ td.price-pending small { color: #b39450 !important; font-style: italic; cursor: 
 }
 .keepa-link:hover { text-decoration: underline; }
 
-/* 売上分析 在庫ランクカードのカスタム凡例 */
-.rank-legend li {
-  display: flex;
-  align-items: center;
-  padding: 4px 6px;
-  border-radius: 4px;
-  cursor: help;
-}
-.rank-legend li:hover { background: rgba(0,0,0,0.04); }
-.rank-legend .lg-dot {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  margin-right: 8px;
-  flex: 0 0 auto;
-}
 .inv-thumb-placeholder {
   display: inline-flex;
   align-items: center;
