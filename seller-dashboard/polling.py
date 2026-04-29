@@ -588,7 +588,7 @@ def sync_catalog_images(limit: int | None = None) -> int:
 # ================================================================
 # 出品一覧（Offers）- 最低価格ツールチップ用
 # ================================================================
-def sync_offers(asins: list[str] | None = None, limit: int = 60, stale_hours: int = 6) -> int:
+def sync_offers(asins: list[str] | None = None, limit: int = 60, stale_hours: int = 2) -> int:
     """各 ASIN の出品一覧を取得し offers_json に保存。
     stale_hours 以内に同期済みのものはスキップ。"""
     import json, time as _t
@@ -989,7 +989,7 @@ def run_all_polling(days: int = 60) -> dict:
 
     # 出品一覧（最低価格ツールチップ用） — 未更新/古いもののみ同期
     try:
-        n = sync_offers(limit=60, stale_hours=6)
+        n = sync_offers(limit=60, stale_hours=2)
         result["details"]["offers"] = n
         log_msg.append(f"offers={n}")
     except Exception as e:
