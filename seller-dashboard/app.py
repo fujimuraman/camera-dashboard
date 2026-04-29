@@ -1916,19 +1916,59 @@ def create_app():
             monthly.append({"k": k, "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
         # 月別: 前期間（年なら前年）の月別売上を同じ月数で並べる
         prev_ym_sorted = sorted(prev_by_month.keys())
-        for i, m in enumerate(monthly):
-            if i < len(prev_ym_sorted):
-                m["cum_prev"] = prev_by_month[prev_ym_sorted[i]]
-            else:
-                m["cum_prev"] = 0
-        # monthly は累計でなく月別なので、cum_prev を「前期間の同じ月の売上」に
-        # ただし daily の cum_prev は累計表示だから違う意味で使われる
-        # → daily と monthly で意味が違うのは混乱の元、monthly でも累計を渡す
+        # monthly でも累計を渡す（cum_prev=前期間の累計売上）
         _prev_cum_m = 0
         for i, m in enumerate(monthly):
             if i < len(prev_ym_sorted):
                 _prev_cum_m += prev_by_month[prev_ym_sorted[i]]
             m["cum_prev"] = _prev_cum_m
+
+        # ----- 市場活況度スコア（BSR 履歴から月別中央値）-----
+        # 各 ASIN の BSR 履歴を月別に集約 → 中央値を算出 → 全在庫で月別中央値
+        # スコア = max(0, 100 - 10 × log10(BSR))   数字が大きいほど市場活況
+        import math as _math
+        with get_db() as _conn3:
+            _bsr_rows = _conn3.execute(
+                "SELECT bsr_history_json FROM inventory "
+                "WHERE status LIKE 'Active%' AND quantity > 0 AND bsr_history_json IS NOT NULL"
+            ).fetchall()
+        market_score_by_ym = {}  # ym -> [median_bsr_per_asin, ...]
+        for _r in _bsr_rows:
+            try:
+                hist = json.loads(_r["bsr_history_json"] or "[]")
+            except Exception:
+                continue
+            asin_by_ym = {}  # ym -> [rank, ...]
+            for h in hist:
+                _date = h.get("date") or ""
+                _rank = h.get("rank")
+                if not _date or not _rank or _rank <= 0:
+                    continue
+                _ym = _date[:7]
+                asin_by_ym.setdefault(_ym, []).append(_rank)
+            for _ym, _ranks in asin_by_ym.items():
+                if not _ranks:
+                    continue
+                _med = sorted(_ranks)[len(_ranks) // 2]  # その商品のその月中央値
+                market_score_by_ym.setdefault(_ym, []).append(_med)
+        # 各月で全在庫の中央値 → スコア化
+        ym_score = {}
+        for _ym, _meds in market_score_by_ym.items():
+            if not _meds:
+                continue
+            _sorted = sorted(_meds)
+            _global_med = _sorted[len(_sorted) // 2]
+            _score = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
+            ym_score[_ym] = {"score": round(_score, 1), "median_bsr": _global_med}
+        # monthly に market_score / market_bsr を埋める
+        for m in monthly:
+            ks = ym_score.get(m["k"])
+            if ks:
+                m["market_score"] = ks["score"]
+                m["market_bsr"] = ks["median_bsr"]
+            else:
+                m["market_score"] = None
+                m["market_bsr"] = None
 
         # 曜日別（0=日～6=土）: 固定費は按分しない（集計目的）
         dow_labels = ["日", "月", "火", "水", "木", "金", "土"]

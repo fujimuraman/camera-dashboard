@@ -201,6 +201,10 @@ def init_db():
         "ALTER TABLE expenses ADD COLUMN tax_category TEXT",
         "ALTER TABLE cost_prices ADD COLUMN sale_date TEXT",
         "ALTER TABLE cost_prices ADD COLUMN sale_flag TEXT",
+        # BSR（市場活況度の元データ）
+        "ALTER TABLE inventory ADD COLUMN bsr_current INTEGER",
+        "ALTER TABLE inventory ADD COLUMN bsr_history_json TEXT",  # 90日履歴（[(date, bsr), ...]）
+        "ALTER TABLE inventory ADD COLUMN bsr_updated_at TEXT",
     ]:
         try:
             conn.execute(alter)

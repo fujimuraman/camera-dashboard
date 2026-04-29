@@ -492,7 +492,7 @@ def sync_keepa_sales(asins: list[str] | None = None, limit: int | None = None,
             "domain": "5",  # Amazon.co.jp
             "asin": ",".join(chunk),
             "stats": "180",  # 180日統計が含まれる
-            "history": "0",
+            "history": "1",  # csv[3] (Sales Rank 時系列) を取得
         }
         try:
             req = urllib.request.Request(
@@ -524,10 +524,40 @@ def sync_keepa_sales(asins: list[str] | None = None, limit: int | None = None,
                 d30 = stats.get("salesRankDrops30")
                 d90 = stats.get("salesRankDrops90")
                 d180 = stats.get("salesRankDrops180")
+                # BSR 履歴: csv[3] = AMAZON Sales Rank (time, rank, time, rank, ...)
+                # time は Keepa minutes (epoch_sec / 60 - 21564000)
+                bsr_current = None
+                bsr_history = []
+                csv = p.get("csv") or []
+                if len(csv) > 3 and csv[3]:
+                    sr = csv[3]
+                    # 日次にダウンサンプリング: 同じ日付の最後の値だけ採用
+                    by_date = {}
+                    for j in range(0, len(sr) - 1, 2):
+                        km = sr[j]
+                        rank = sr[j + 1]
+                        if rank is None or rank < 0:
+                            continue
+                        ts = (km + 21564000) * 60
+                        try:
+                            date_str = datetime.utcfromtimestamp(ts).date().isoformat()
+                        except (OSError, ValueError):
+                            continue
+                        by_date[date_str] = rank
+                    bsr_history = [{"date": d, "rank": r} for d, r in sorted(by_date.items())]
+                    if bsr_history:
+                        bsr_current = bsr_history[-1]["rank"]
+                # current 配列からも取得（より新鮮な可能性）
+                cur = p.get("current") or []
+                if len(cur) > 3 and cur[3] and cur[3] > 0:
+                    bsr_current = cur[3]
+                bsr_json = _json.dumps(bsr_history, ensure_ascii=False) if bsr_history else None
                 c.execute(
                     "UPDATE inventory SET keepa_sales_30d=?, keepa_sales_90d=?, "
-                    "  keepa_sales_180d=?, keepa_updated_at=? WHERE asin=?",
-                    (d30, d90, d180, now_iso, asin),
+                    "  keepa_sales_180d=?, keepa_updated_at=?, "
+                    "  bsr_current=?, bsr_history_json=?, bsr_updated_at=? "
+                    "WHERE asin=?",
+                    (d30, d90, d180, now_iso, bsr_current, bsr_json, now_iso, asin),
                 )
                 updated += 1
     return updated
