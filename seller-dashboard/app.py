@@ -1270,11 +1270,12 @@ def create_app():
                 d["_rank_p30"] = p30
                 d["_rank_p60"] = p60
                 d["_rank_p90"] = p90
-                if p30 >= 0.7:
+                # 閾値 60% （実績との乖離を踏まえ 70% から緩和）
+                if p30 >= 0.6:
                     d["_rank"] = "S"
-                elif p60 >= 0.7:
+                elif p60 >= 0.6:
                     d["_rank"] = "A"
-                elif p90 >= 0.7:
+                elif p90 >= 0.6:
                     d["_rank"] = "B"
                 else:
                     d["_rank"] = "C"
@@ -1907,11 +1908,12 @@ def create_app():
                         p30 = 1 - (1 - p) ** 30
                         p60 = 1 - (1 - p) ** 60
                         p90 = 1 - (1 - p) ** 90
-                        if p30 >= 0.7:
+                        # 閾値 60%（在庫一覧と統一）
+                        if p30 >= 0.6:
                             rank_buckets["S"] += 1
-                        elif p60 >= 0.7:
+                        elif p60 >= 0.6:
                             rank_buckets["A"] += 1
-                        elif p90 >= 0.7:
+                        elif p90 >= 0.6:
                             rank_buckets["B"] += 1
                         else:
                             rank_buckets["C"] += 1
