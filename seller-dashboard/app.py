@@ -1839,9 +1839,8 @@ def create_app():
             try:
                 with get_db() as _c:
                     # 1. 販売スピード分布：ASIN登録日 → 販売日 の経過日数で集計
+                    # 右上の期間フィルタ（start_date 〜 end_date）で絞り込む
                     # （Pending除外、return_model='exclude'なら返品も除外）
-                    # asin_listed_at の形式は '2026/04/20 13:36:22 JST' なので、
-                    # SQLite julianday は ISO形式で動くため Python 側で変換しながら集計
                     _sql_sold = """
                         SELECT o.purchase_date, oi.quantity_ordered AS q,
                                r.id AS return_id, inv.asin_listed_at
@@ -1850,6 +1849,7 @@ def create_app():
                         LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
                         LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
                         WHERE o.order_status IN ('Shipped', 'Unshipped')
+                          AND substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
                     """
                     import re as _re
                     def _parse_listed_at(s):
@@ -1862,7 +1862,7 @@ def create_app():
                             return datetime(int(m[1]), int(m[2]), int(m[3])).date()
                         except ValueError:
                             return None
-                    for _r in _c.execute(_sql_sold):
+                    for _r in _c.execute(_sql_sold, (start_date, end_date)):
                         if return_model == "exclude" and _r["return_id"]:
                             continue
                         listed = _parse_listed_at(_r["asin_listed_at"])

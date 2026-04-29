@@ -124,7 +124,8 @@
     <div class="card h-100">
       <div class="card-header py-2">
         <strong>⚡ 販売スピード分布</strong>
-        <small class="text-muted ms-1" title="全期間の販売（Pending除外）について、ASIN登録日 → 販売日 にかかった日数で個数を集計。&#10;30日以内が多い=回転が速い／180日超が多い=滞留してから売れた、という見方ができます。">— 登録から販売までにかかった日数</small>
+        <small class="text-muted ms-1" title="右上の期間で絞り込んだ販売（Pending除外）について、ASIN登録日 → 販売日 にかかった日数で個数を集計。&#10;30日以内が多い=回転が速い／180日超が多い=滞留してから売れた、という見方ができます。">— 登録から販売までにかかった日数</small>
+        <span class="badge bg-light text-dark ms-2" title="集計対象期間（右上のセレクタで変更可）">{{ start_date }} 〜 {{ end_date }}</span>
       </div>
       <div class="card-body">
         <div style="position:relative; height:280px;">
@@ -138,6 +139,7 @@
       <div class="card-header py-2">
         <strong>🎯 在庫の売れ行きランク</strong>
         <small class="text-muted ms-1" title="現在の Active 在庫を確率モデルで分類: S(1ヶ月70%↑) / A(2ヶ月70%↑) / B(3ヶ月70%↑) / C(<70%)">— S/A/B/C で何個ずつ持っているか</small>
+        <span class="badge bg-light text-dark ms-2" title="現在の Active 在庫を集計（期間に依存しない）">現時点</span>
       </div>
       <div class="card-body">
         <div style="position:relative; height:280px;">
