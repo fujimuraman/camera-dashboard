@@ -175,6 +175,38 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT,
   created_at TEXT
 );
+
+-- カメラ市況分析: 市場全体（カメラ＋レンズ）の BSR 履歴メタ情報
+-- ASIN ごと最新 BSR 履歴を保持。bsr_history_json は最大2年分の日次 [{date, rank}, ...]
+CREATE TABLE IF NOT EXISTS market_bsr_meta (
+  asin TEXT PRIMARY KEY,
+  category TEXT,
+  rank_in_category INTEGER,
+  title TEXT,
+  current_price INTEGER,
+  bsr_current INTEGER,
+  bsr_history_json TEXT,
+  bsr_updated_at TEXT
+);
+
+-- BSR 日次履歴の正規化テーブル（参照用。重複した可視化が要らなければ未使用でも可）
+CREATE TABLE IF NOT EXISTS market_bsr_history (
+  asin TEXT,
+  date TEXT,
+  rank INTEGER,
+  fetched_at TEXT,
+  PRIMARY KEY (asin, date)
+);
+
+-- 市場活況スコアのキャッシュ（ym='YYYY-MM'、score=10〜90、median_bsr=その月の中央値）
+CREATE TABLE IF NOT EXISTS market_score_cache (
+  ym TEXT PRIMARY KEY,
+  score REAL,
+  median_bsr INTEGER,
+  raw_score REAL,
+  asin_count INTEGER,
+  updated_at TEXT
+);
 """
 
 

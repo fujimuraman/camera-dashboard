@@ -234,11 +234,23 @@ function mkChart(id, data, withCum) {
   const hasMarket = data.some(d => d && d.market_score !== undefined && d.market_score !== null);
   if (hasMarket) {
     datasets.push({
-      type: 'line', label: '市場活況度（高=売れてる）',
+      type: 'line', label: '自社在庫スコア',
       data: data.map(d => d.market_score),
       borderColor: '#a855f7',
       backgroundColor: '#a855f7',
       pointRadius: 3, tension: 0.2, yAxisID: 'y1', order: 6,
+      spanGaps: true,
+    });
+  }
+  // カメラ市場スコア（トップN ベストセラーから算出）
+  const hasMarketFull = data.some(d => d && d.market_full_score !== undefined && d.market_full_score !== null);
+  if (hasMarketFull) {
+    datasets.push({
+      type: 'line', label: 'カメラ市場スコア（売れ筋トップN）',
+      data: data.map(d => d.market_full_score),
+      borderColor: '#f97316',
+      backgroundColor: '#f97316',
+      pointRadius: 3, tension: 0.2, yAxisID: 'y1', order: 7,
       spanGaps: true,
     });
   }
@@ -253,10 +265,15 @@ function mkChart(id, data, withCum) {
           label: (ctx) => {
             const lbl = ctx.dataset.label || '';
             const v = ctx.parsed.y;
-            // 市場活況度は元の BSR 中央値を併記
-            if (lbl.indexOf('市場活況度') === 0) {
+            // 自社在庫スコアは元の BSR 中央値を併記
+            if (lbl.indexOf('自社在庫スコア') === 0) {
               const i = ctx.dataIndex;
               const bsr = data[i] && data[i].market_bsr;
+              return `${lbl}: ${v}` + (bsr ? `（BSR中央値 ${bsr.toLocaleString()}位）` : '');
+            }
+            if (lbl.indexOf('カメラ市場スコア') === 0) {
+              const i = ctx.dataIndex;
+              const bsr = data[i] && data[i].market_full_bsr;
               return `${lbl}: ${v}` + (bsr ? `（BSR中央値 ${bsr.toLocaleString()}位）` : '');
             }
             return /円/.test(lbl) ? `${lbl}: ${fmtYen(v)}` : `${lbl}: ${v}`;

@@ -201,6 +201,58 @@
   </div>
 </form>
 
+<!-- ⑤-2 カメラ市況分析（カメラ＋レンズ売れ筋トップN の BSR を継続取得して市場全体のスコアを算出） -->
+<form method="post" class="mb-4">
+  <input type="hidden" name="form_type" value="market_bsr">
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>📊 カメラ市況分析（市場全体スコア）</span>
+      <span class="badge bg-secondary">オプション</span>
+    </div>
+    <div class="card-body">
+      <p class="small text-muted mb-2">
+        Amazon カメラ＆レンズの売れ筋トップ ASIN を継続取得し、<strong>市場全体の活況スコア</strong>を算出します。
+        売上分析グラフに「自社在庫スコア（紫）」と並べて「カメラ市場スコア（オレンジ）」を表示し、
+        市場全体が不振なのか自社固有の問題なのかを切り分けられます。
+      </p>
+      <div class="alert alert-warning small mb-3">
+        ⚠️ 他に Keepa を使うツール（refresh_ProductsList 等）がある場合は合算した使用量に注意してください。<br>
+        24時間で N 件を均等取得（例: トップ200 なら約7分間隔で1件）し、瞬間的にトークンを使い切らない設計です。<br>
+        現在登録済み ASIN: <strong>{{ market_bsr_seeded|default(0) }}件</strong>
+        / 取得済み: <strong>{{ market_bsr_fetched|default(0) }}件</strong>
+        {% if market_bsr_last_score %} / 直近スコア: <strong>{{ market_bsr_last_score }}</strong>{% endif %}
+      </div>
+      <div class="form-check mb-3">
+        <input class="form-check-input" type="checkbox" name="market_bsr_enabled"
+               id="market_bsr_enabled"
+               {% if market_bsr_enabled %}checked{% endif %}>
+        <label class="form-check-label" for="market_bsr_enabled">
+          市場 BSR の継続取得を有効化
+        </label>
+      </div>
+      <div class="row g-2 align-items-end">
+        <div class="col-md-7">
+          <label class="form-label">取得対象（カメラ＋レンズ売れ筋トップから）</label>
+          <select name="market_bsr_top_n" class="form-select">
+            <option value="100" {% if market_bsr_top_n == '100' %}selected{% endif %}>トップ100  (Keepa 月8.3%、最も低負荷)</option>
+            <option value="200" {% if market_bsr_top_n == '200' %}selected{% endif %}>トップ200  (Keepa 月16.7%、推奨)</option>
+            <option value="300" {% if market_bsr_top_n == '300' %}selected{% endif %}>トップ300  (Keepa 月25%)</option>
+            <option value="400" {% if market_bsr_top_n == '400' %}selected{% endif %}>トップ400  (Keepa 月33.3%)</option>
+            <option value="500" {% if market_bsr_top_n == '500' %}selected{% endif %}>トップ500  (Keepa 月41.7%、詳細)</option>
+          </select>
+        </div>
+        <div class="col-md-auto">
+          <button class="btn btn-primary">保存</button>
+        </div>
+      </div>
+      <p class="small text-muted mt-2 mb-0">
+        ※ 初回は <code>python seed_market_asins.py</code> でトップ500 ASIN を仕込んでください（既に登録済みなら不要）。<br>
+        ※ ASIN 1件 = 6 トークン。残量50未満ならスキップして refresh_ProductsList の動作枠を確保します。
+      </p>
+    </div>
+  </div>
+</form>
+
 <!-- ⑥ 計算ルール: 利益計算ロジック -->
 <form method="post" class="mb-4">
   <input type="hidden" name="form_type" value="profit_logic">

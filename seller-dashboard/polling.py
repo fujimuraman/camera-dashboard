@@ -564,6 +564,203 @@ def sync_keepa_sales(asins: list[str] | None = None, limit: int | None = None,
 
 
 # ================================================================
+# Keepa: トークン残量チェック（polling から共有 API キーで使う）
+# ================================================================
+def keepa_tokens_left() -> int | None:
+    """Keepa /token API で現在のトークン残量を取得。失敗時は None。"""
+    import json as _json
+    from db import get_setting
+    api_key = get_setting("keepa_api_key", "")
+    if not api_key:
+        return None
+    try:
+        url = f"https://api.keepa.com/token?key={api_key}"
+        req = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+            if raw[:2] == b"\x1f\x8b":
+                import gzip
+                raw = gzip.decompress(raw)
+            data = _json.loads(raw.decode("utf-8"))
+        return int(data.get("tokensLeft", 0) or 0)
+    except Exception:
+        return None
+
+
+# ================================================================
+# 市場 BSR 取得（カメラ＋レンズ売れ筋トップN を 24h 均等取得）
+# ================================================================
+def sync_market_bsr_one() -> dict:
+    """市場 BSR インクリメンタル同期: 1 ASIN だけ取得して DB に保存。
+    APScheduler が間隔指定で呼び出す前提（24h ÷ N 件分間隔）。
+    戻り値: {"status": "ok"|"skip_disabled"|"skip_low_token"|"skip_no_target"|"error",
+              "asin": str|None, "ym_score_updated": bool, ...}
+    """
+    import json as _json
+    from db import get_setting
+    result = {"status": "skip", "asin": None}
+    if get_setting("market_bsr_enabled", "0") != "1":
+        result["status"] = "skip_disabled"
+        return result
+
+    api_key = get_setting("keepa_api_key", "")
+    if not api_key:
+        result["status"] = "skip_no_api_key"
+        return result
+
+    # トークン残量チェック（refresh_ProductsList と共存するため余裕を残す）
+    tokens = keepa_tokens_left()
+    if tokens is not None and tokens < 50:
+        result["status"] = "skip_low_token"
+        result["tokens_left"] = tokens
+        return result
+
+    try:
+        top_n = int(get_setting("market_bsr_top_n", "200") or 200)
+    except Exception:
+        top_n = 200
+    top_n = max(50, min(500, top_n))
+
+    # トップNのうち最も古い更新の ASIN を1件選ぶ
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT asin FROM market_bsr_meta "
+            "WHERE rank_in_category IS NOT NULL AND rank_in_category <= ? "
+            "ORDER BY (bsr_updated_at IS NULL) DESC, bsr_updated_at ASC, rank_in_category ASC "
+            "LIMIT 1",
+            (top_n,),
+        ).fetchone()
+    if not row:
+        result["status"] = "skip_no_target"
+        return result
+    asin = row["asin"]
+    result["asin"] = asin
+
+    # Keepa Product API で1 ASIN 取得
+    url = "https://api.keepa.com/product"
+    params = {
+        "key": api_key,
+        "domain": "5",
+        "asin": asin,
+        "stats": "180",
+        "history": "1",
+    }
+    try:
+        req = urllib.request.Request(
+            url + "?" + urllib.parse.urlencode(params),
+            headers={"User-Agent": "seller-dashboard/1.0", "Accept-Encoding": "gzip"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            if resp.headers.get("Content-Encoding") == "gzip" or raw[:2] == b"\x1f\x8b":
+                import gzip
+                raw = gzip.decompress(raw)
+            payload = _json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        (LOGS_DIR / "market_bsr_error.log").write_text(
+            f"{datetime.utcnow().isoformat()} asin={asin} err={type(e).__name__}: {e}\n",
+            encoding="utf-8",
+        )
+        result["status"] = "error"
+        result["error"] = str(e)[:200]
+        return result
+
+    products = payload.get("products") or []
+    if not products:
+        result["status"] = "no_product"
+        # 失敗でも updated_at は進めて先に進む（永遠に詰まるのを防止）
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE market_bsr_meta SET bsr_updated_at=? WHERE asin=?",
+                (datetime.utcnow().isoformat(), asin),
+            )
+        return result
+
+    p = products[0]
+    title = p.get("title")
+    csv = p.get("csv") or []
+    bsr_current = None
+    bsr_history = []
+    if len(csv) > 3 and csv[3]:
+        sr = csv[3]
+        by_date = {}
+        for j in range(0, len(sr) - 1, 2):
+            km = sr[j]
+            rank = sr[j + 1]
+            if rank is None or rank < 0:
+                continue
+            ts = (km + 21564000) * 60
+            try:
+                date_str = datetime.utcfromtimestamp(ts).date().isoformat()
+            except (OSError, ValueError):
+                continue
+            by_date[date_str] = rank
+        bsr_history = [{"date": d, "rank": r} for d, r in sorted(by_date.items())]
+        if bsr_history:
+            bsr_current = bsr_history[-1]["rank"]
+    cur = p.get("current") or []
+    if len(cur) > 3 and cur[3] and cur[3] > 0:
+        bsr_current = cur[3]
+    # 価格（New 価格 csv[1]）
+    price = None
+    if len(cur) > 1 and cur[1] and cur[1] > 0:
+        price = int(cur[1])
+
+    bsr_json = _json.dumps(bsr_history, ensure_ascii=False) if bsr_history else None
+    now_iso = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE market_bsr_meta SET title=?, current_price=?, bsr_current=?, "
+            "  bsr_history_json=?, bsr_updated_at=? WHERE asin=?",
+            (title, price, bsr_current, bsr_json, now_iso, asin),
+        )
+        # history テーブルにも upsert
+        for h in bsr_history[-90:]:  # 直近90日のみ正規化テーブルに反映（参照用）
+            conn.execute(
+                "INSERT OR REPLACE INTO market_bsr_history(asin, date, rank, fetched_at) "
+                "VALUES(?, ?, ?, ?)",
+                (asin, h["date"], h["rank"], now_iso),
+            )
+    result["status"] = "ok"
+    result["history_points"] = len(bsr_history)
+    result["bsr_current"] = bsr_current
+
+    # スコアキャッシュ再計算
+    try:
+        recompute_market_score_cache()
+        result["score_recomputed"] = True
+    except Exception as e:
+        result["score_recomputed_error"] = str(e)[:200]
+    return result
+
+
+def recompute_market_score_cache() -> int:
+    """market_bsr_meta から市場活況スコアを再計算し market_score_cache に保存。
+    戻り値=書き込まれた月数。"""
+    from market_score import compute_market_score
+    with get_db() as conn:
+        rows = [r["bsr_history_json"] for r in conn.execute(
+            "SELECT bsr_history_json FROM market_bsr_meta "
+            "WHERE bsr_history_json IS NOT NULL AND bsr_history_json != '[]'"
+        ).fetchall()]
+    ym_score = compute_market_score(rows)
+    now_iso = datetime.utcnow().isoformat()
+    with get_db() as conn:
+        for ym, v in ym_score.items():
+            conn.execute(
+                "INSERT INTO market_score_cache(ym, score, median_bsr, raw_score, asin_count, updated_at) "
+                "VALUES(?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(ym) DO UPDATE SET "
+                "  score=excluded.score, median_bsr=excluded.median_bsr, "
+                "  raw_score=excluded.raw_score, asin_count=excluded.asin_count, "
+                "  updated_at=excluded.updated_at",
+                (ym, v.get("score"), v.get("median_bsr"),
+                 v.get("raw"), v.get("asin_count"), now_iso),
+            )
+    return len(ym_score)
+
+
+# ================================================================
 # Catalog Items 画像取得（画像 URL 欠落分を補完）
 # ================================================================
 def sync_catalog_images(limit: int | None = None) -> int:

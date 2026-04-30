@@ -578,6 +578,40 @@ def _start_scheduler(app):
             except Exception as e:
                 app.logger.error(f"polling_log cleanup error: {e}")
 
+    def market_bsr_job():
+        """市場 BSR インクリメンタル取得（24h ÷ N で間隔調整。本体側は1ASINずつ）。"""
+        with app.app_context():
+            try:
+                from polling import sync_market_bsr_one
+                r = sync_market_bsr_one()
+                app.logger.info(f"market_bsr: {r}")
+            except Exception as e:
+                app.logger.error(f"market_bsr error: {e}")
+
+    def reschedule_market_bsr_job():
+        """設定 market_bsr_top_n に応じて市場BSR取得間隔を更新。
+        24h ÷ N 分間隔（小数点切捨て、最小 60 秒、最大 30 分）。"""
+        try:
+            enabled = get_setting("market_bsr_enabled", "0") == "1"
+            n = int(get_setting("market_bsr_top_n", "200") or 200)
+        except Exception:
+            n = 200
+            enabled = False
+        n = max(50, min(500, n))
+        # 1日 = 1440 分。N件取得するため間隔 = 1440/N 分
+        interval_sec = max(60, int(1440 * 60 / n))
+        if enabled:
+            scheduler.add_job(
+                market_bsr_job, "interval", seconds=interval_sec, id="market_bsr",
+                replace_existing=True,
+                next_run_time=_dt.now() + _td(seconds=120),
+            )
+        else:
+            try:
+                scheduler.remove_job("market_bsr")
+            except Exception:
+                pass
+
     # Polling/Price Engine 間隔は config.py で集中管理（DBのpolling_intervalは未使用）。
     # Flask再起動でジョブの「初回」が間隔後になるため、起動直後にも1回走らせる。
     from datetime import datetime as _dt, timedelta as _td
@@ -588,6 +622,10 @@ def _start_scheduler(app):
     # polling_log クリーンアップ: 1日1回実行（起動5分後に1回目）
     scheduler.add_job(cleanup_job, "interval", days=1, id="cleanup_polling_log",
                       replace_existing=True, next_run_time=_dt.now() + _td(minutes=5))
+    # 市場BSR取得（設定に従って初期登録）
+    reschedule_market_bsr_job()
+    # 設定保存後に呼び出せるようにアプリ属性として公開
+    app.reschedule_market_bsr_job = reschedule_market_bsr_job
     scheduler.start()
     app.scheduler = scheduler
 
@@ -2013,6 +2051,27 @@ def create_app():
             else:
                 m["market_score"] = None
                 m["market_bsr"] = None
+
+        # ----- カメラ市場全体スコア（market_score_cache から）-----
+        try:
+            with get_db() as _conn4:
+                _mrows = _conn4.execute(
+                    "SELECT ym, score, median_bsr FROM market_score_cache"
+                ).fetchall()
+            _market_full = {r["ym"]: {"score": r["score"], "median_bsr": r["median_bsr"]}
+                            for r in _mrows}
+            for m in monthly:
+                mf = _market_full.get(m["k"])
+                if mf:
+                    m["market_full_score"] = mf["score"]
+                    m["market_full_bsr"] = mf["median_bsr"]
+                else:
+                    m["market_full_score"] = None
+                    m["market_full_bsr"] = None
+        except Exception:
+            for m in monthly:
+                m["market_full_score"] = None
+                m["market_full_bsr"] = None
         # DEBUG
         try:
             with open(r"C:\claude\seller-dashboard\logs\market_debug.log", "a", encoding="utf-8") as _f:
@@ -2296,6 +2355,20 @@ def create_app():
                         flash(f"Keepa 同期エラー: {e}", "danger")
                 else:
                     flash("Keepa API key を保存しました", "success")
+            elif form_type == "market_bsr":
+                enabled = "1" if request.form.get("market_bsr_enabled") == "on" else "0"
+                set_setting("market_bsr_enabled", enabled)
+                top_n = request.form.get("market_bsr_top_n", "200")
+                if top_n not in ("100", "200", "300", "400", "500"):
+                    top_n = "200"
+                set_setting("market_bsr_top_n", top_n)
+                # スケジューラを再登録
+                try:
+                    if hasattr(app, "reschedule_market_bsr_job"):
+                        app.reschedule_market_bsr_job()
+                except Exception as _e:
+                    app.logger.warning(f"reschedule_market_bsr failed: {_e}")
+                flash(f"カメラ市況分析: {'有効' if enabled == '1' else '無効'} / トップ{top_n}", "success")
             elif form_type == "password":
                 cur = request.form.get("current_password", "")
                 new_ = request.form.get("new_password", "")
@@ -2384,8 +2457,29 @@ def create_app():
             "profit_return_model": get_setting("profit_return_model", "exclude"),
             "price_diverge_threshold": get_setting("price_diverge_threshold", "1000"),
             "inline_price_apply_mode": get_setting("inline_price_apply_mode", "manual"),
+            "market_bsr_enabled": get_setting("market_bsr_enabled", "0") == "1",
+            "market_bsr_top_n": get_setting("market_bsr_top_n", "200"),
             "current_username": current_user.username,
         }
+        # 市場BSRの状況（取得済み件数 / 直近スコア）も渡す
+        try:
+            with get_db() as _c:
+                ctx["market_bsr_seeded"] = _c.execute(
+                    "SELECT COUNT(*) AS c FROM market_bsr_meta"
+                ).fetchone()["c"]
+                ctx["market_bsr_fetched"] = _c.execute(
+                    "SELECT COUNT(*) AS c FROM market_bsr_meta WHERE bsr_updated_at IS NOT NULL"
+                ).fetchone()["c"]
+                _last = _c.execute(
+                    "SELECT ym, score FROM market_score_cache ORDER BY ym DESC LIMIT 1"
+                ).fetchone()
+                ctx["market_bsr_last_score"] = (
+                    f"{_last['ym']}: {_last['score']}" if _last else ""
+                )
+        except Exception:
+            ctx["market_bsr_seeded"] = 0
+            ctx["market_bsr_fetched"] = 0
+            ctx["market_bsr_last_score"] = ""
         return render_template("settings.html", **ctx)
 
     # ==========================================================
