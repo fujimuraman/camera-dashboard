@@ -8,8 +8,9 @@ if not api_key:
     print("ERROR: keepa_api_key not set"); sys.exit(1)
 
 selection = {
-    "current_NEW_gte": 1000000,       # ¥10,000（Keepa単位 = 円×100）
-    "current_NEW_lte": 20000000,      # ¥200,000 上限（超高級機・特殊機材を除外）
+    "current_NEW_gte": 1000000,       # ¥10,000 (Keepa単位 = 円×100)
+    "current_SALES_gte": 1,           # SalesRank が記録されているもののみ（ノイズ除去）
+    "current_SALES_lte": 500000,      # 上限（極端な不人気品は除外）
     "categories_include": [3371371, 2285023051],
     "sort": [["current_SALES", "asc"]],  # SalesRank昇順=売れ筋
     "perPage": 500,
