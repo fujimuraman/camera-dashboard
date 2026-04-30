@@ -592,12 +592,18 @@ def keepa_tokens_left() -> int | None:
 # ================================================================
 def sync_market_bsr_one() -> dict:
     """市場 BSR インクリメンタル同期: 1 ASIN だけ取得して DB に保存。
-    APScheduler が間隔指定で呼び出す前提（24h ÷ N 件分間隔）。
-    戻り値: {"status": "ok"|"skip_disabled"|"skip_low_token"|"skip_no_target"|"error",
-              "asin": str|None, "ym_score_updated": bool, ...}
+    APScheduler が 14.4分間隔で呼び出す前提（24h ÷ 100件 = 14.4分）。
+
+    トークン残量ヒステリシス:
+      - 残量 50 を割ったら一時停止（market_bsr_paused=1）
+      - 残量 200 まで回復したら自動再開（paused=0）
+    refresh_ProductsList 等の他ツールとの共存のため。
+
+    戻り値: {"status": "ok"|"skip_disabled"|"skip_paused"|"skip_low_token"|...,
+              "asin": str|None, ...}
     """
     import json as _json
-    from db import get_setting
+    from db import get_setting, set_setting
     result = {"status": "skip", "asin": None}
     if get_setting("market_bsr_enabled", "0") != "1":
         result["status"] = "skip_disabled"
@@ -608,27 +614,42 @@ def sync_market_bsr_one() -> dict:
         result["status"] = "skip_no_api_key"
         return result
 
-    # トークン残量チェック（refresh_ProductsList と共存するため余裕を残す）
+    # ヒステリシス: paused 中は復帰閾値（200）まで待つ
+    paused = get_setting("market_bsr_paused", "0") == "1"
     tokens = keepa_tokens_left()
+    if paused:
+        if tokens is not None and tokens >= 200:
+            set_setting("market_bsr_paused", "0")
+            result["resumed"] = True
+        else:
+            result["status"] = "skip_paused"
+            result["tokens_left"] = tokens
+            return result
+
+    # 取得前残量チェック: 50 未満なら paused モードに入る
     if tokens is not None and tokens < 50:
+        set_setting("market_bsr_paused", "1")
         result["status"] = "skip_low_token"
         result["tokens_left"] = tokens
+        result["paused"] = True
         return result
 
-    try:
-        top_n = int(get_setting("market_bsr_top_n", "200") or 200)
-    except Exception:
-        top_n = 200
-    top_n = max(50, min(500, top_n))
+    # 対象範囲（new_top_100 = 1-100位 / used_mid_200 = 101-200位）
+    target_range = get_setting("market_bsr_target_range", "new_top_100")
+    if target_range == "used_mid_200":
+        rank_lo, rank_hi = 101, 200
+    else:  # new_top_100
+        rank_lo, rank_hi = 1, 100
 
-    # トップNのうち最も古い更新の ASIN を1件選ぶ
+    # 対象範囲のうち最も古い更新の ASIN を1件選ぶ
     with get_db() as conn:
         row = conn.execute(
             "SELECT asin FROM market_bsr_meta "
-            "WHERE rank_in_category IS NOT NULL AND rank_in_category <= ? "
+            "WHERE rank_in_category IS NOT NULL "
+            "  AND rank_in_category BETWEEN ? AND ? "
             "ORDER BY (bsr_updated_at IS NULL) DESC, bsr_updated_at ASC, rank_in_category ASC "
             "LIMIT 1",
-            (top_n,),
+            (rank_lo, rank_hi),
         ).fetchone()
     if not row:
         result["status"] = "skip_no_target"

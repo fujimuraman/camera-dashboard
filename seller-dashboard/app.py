@@ -589,17 +589,15 @@ def _start_scheduler(app):
                 app.logger.error(f"market_bsr error: {e}")
 
     def reschedule_market_bsr_job():
-        """設定 market_bsr_top_n に応じて市場BSR取得間隔を更新。
-        24h ÷ N 分間隔（小数点切捨て、最小 60 秒、最大 30 分）。"""
+        """市場BSR取得を 14.4分間隔（=24h ÷ 100ASIN）でスケジュール。
+        ASIN 数は 100件固定、対象範囲は market_bsr_target_range（new_top_100/used_mid_200）で切替。"""
+        from datetime import datetime as _dt, timedelta as _td
         try:
             enabled = get_setting("market_bsr_enabled", "0") == "1"
-            n = int(get_setting("market_bsr_top_n", "200") or 200)
         except Exception:
-            n = 200
             enabled = False
-        n = max(50, min(500, n))
-        # 1日 = 1440 分。N件取得するため間隔 = 1440/N 分
-        interval_sec = max(60, int(1440 * 60 / n))
+        # 100ASIN を 24時間で取得 → 14.4分（864秒）間隔
+        interval_sec = 864
         if enabled:
             scheduler.add_job(
                 market_bsr_job, "interval", seconds=interval_sec, id="market_bsr",
@@ -2358,17 +2356,20 @@ def create_app():
             elif form_type == "market_bsr":
                 enabled = "1" if request.form.get("market_bsr_enabled") == "on" else "0"
                 set_setting("market_bsr_enabled", enabled)
-                top_n = request.form.get("market_bsr_top_n", "200")
-                if top_n not in ("100", "200", "300", "400", "500"):
-                    top_n = "200"
-                set_setting("market_bsr_top_n", top_n)
+                target_range = request.form.get("market_bsr_target_range", "new_top_100")
+                if target_range not in ("new_top_100", "used_mid_200"):
+                    target_range = "new_top_100"
+                set_setting("market_bsr_target_range", target_range)
+                # 範囲切替時は paused リセット
+                set_setting("market_bsr_paused", "0")
                 # スケジューラを再登録
                 try:
                     if hasattr(app, "reschedule_market_bsr_job"):
                         app.reschedule_market_bsr_job()
                 except Exception as _e:
                     app.logger.warning(f"reschedule_market_bsr failed: {_e}")
-                flash(f"カメラ市況分析: {'有効' if enabled == '1' else '無効'} / トップ{top_n}", "success")
+                label = "新品メイン（1-100位）" if target_range == "new_top_100" else "中古メイン（101-200位）"
+                flash(f"カメラ市況分析: {'有効' if enabled == '1' else '無効'} / {label}", "success")
             elif form_type == "password":
                 cur = request.form.get("current_password", "")
                 new_ = request.form.get("new_password", "")
@@ -2458,7 +2459,8 @@ def create_app():
             "price_diverge_threshold": get_setting("price_diverge_threshold", "1000"),
             "inline_price_apply_mode": get_setting("inline_price_apply_mode", "manual"),
             "market_bsr_enabled": get_setting("market_bsr_enabled", "0") == "1",
-            "market_bsr_top_n": get_setting("market_bsr_top_n", "200"),
+            "market_bsr_target_range": get_setting("market_bsr_target_range", "new_top_100"),
+            "market_bsr_paused": get_setting("market_bsr_paused", "0") == "1",
             "current_username": current_user.username,
         }
         # 市場BSRの状況（取得済み件数 / 直近スコア）も渡す
