@@ -201,27 +201,24 @@
   </div>
 </form>
 
-<!-- ⑤-2 カメラ市況分析（カメラ＋レンズ売れ筋トップN の BSR を継続取得して市場全体のスコアを算出） -->
+<!-- ⑤-2 カメラ市況分析（自社仕入れ対象リスト連動版） -->
 <form method="post" class="mb-4">
   <input type="hidden" name="form_type" value="market_bsr">
   <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
-      <span>📊 カメラ市況分析（市場全体スコア）</span>
+      <span>📊 カメラ市況分析（自社仕入れ対象リスト連動）</span>
       <span class="badge bg-secondary">オプション</span>
     </div>
     <div class="card-body">
       <p class="small text-muted mb-2">
-        Amazon カメラ＆レンズの売れ筋トップ ASIN を継続取得し、<strong>市場全体の活況スコア</strong>を算出します。
-        売上分析グラフに「自社在庫スコア（紫）」と並べて「カメラ市場スコア（オレンジ）」を表示し、
-        市場全体が不振なのか自社固有の問題なのかを切り分けられます。
+        自社が仕入れ対象としているカメラ・レンズ（需要 S/A/B）+ 過去1年の注文履歴 ASIN を取得して、
+        <strong>自社事業に最も近い市況スコア</strong>を算出します。
       </p>
-      <div class="alert alert-warning small mb-3">
-        ⚠️ 他に Keepa を使うツールがある場合は合算した使用量に注意してください。<br>
-        100 ASIN を 24時間で均等取得（約14.4分に1件）。瞬間的にトークンを使い切らない設計です。<br>
-        トークン残量が <strong>50</strong> を割ったら自動停止し、<strong>200</strong> まで回復するまで待機します。<br>
-        現在登録済み ASIN: <strong>{{ market_bsr_seeded|default(0) }}件</strong>
+      <div class="alert alert-info small mb-3">
+        📋 取得対象: <strong>{{ market_bsr_seeded|default(0) }}件</strong>
         / 取得済み: <strong>{{ market_bsr_fetched|default(0) }}件</strong>
         {% if market_bsr_last_score %} / 直近スコア: <strong>{{ market_bsr_last_score }}</strong>{% endif %}
+        {% if market_bsr_last_round_at %} / 最終ループ: {{ market_bsr_last_round_at[:10] }}{% endif %}
         {% if market_bsr_paused %} / <span class="badge bg-warning text-dark">休止中（トークン回復待ち）</span>{% endif %}
       </div>
       <div class="form-check mb-3">
@@ -232,25 +229,14 @@
           市場 BSR の継続取得を有効化
         </label>
       </div>
-      <div class="row g-2 align-items-end">
-        <div class="col-md-8">
-          <label class="form-label">取得対象（100 ASIN 固定、24時間で1周）</label>
-          <select name="market_bsr_target_range" class="form-select">
-            <option value="new_top_100" {% if market_bsr_target_range == 'new_top_100' %}selected{% endif %}>
-              新品メイン（売れ筋 1〜100位）— 最新機種・市場全体景況
-            </option>
-            <option value="used_mid_200" {% if market_bsr_target_range == 'used_mid_200' %}selected{% endif %}>
-              中古メイン（売れ筋 101〜200位）— 型落ち機・自社事業に近い景況
-            </option>
-          </select>
-        </div>
-        <div class="col-md-auto">
-          <button class="btn btn-primary">保存</button>
-        </div>
+      <div class="text-end">
+        <button class="btn btn-primary">保存</button>
       </div>
       <p class="small text-muted mt-2 mb-0">
+        ※ 14.4分に1件取得、リスト全件で約16日で1周。1周完了時に注文履歴 ASIN を取り込み、
+        BSR上位1,500件 + 未取得 のリストに自動更新します。<br>
         ※ 月のトークン消費は約 18,000（プラン枠の 8.3%）。<br>
-        ※ ASIN 1件 = 6 トークン。残量50未満で自動停止、200まで回復したら再開（5分間隔でチェック）。
+        ※ 残量 50 未満で自動停止、200 で自動再開。
       </p>
     </div>
   </div>

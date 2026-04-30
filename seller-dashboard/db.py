@@ -186,7 +186,10 @@ CREATE TABLE IF NOT EXISTS market_bsr_meta (
   current_price INTEGER,
   bsr_current INTEGER,
   bsr_history_json TEXT,
-  bsr_updated_at TEXT
+  bsr_updated_at TEXT,
+  fetch_attempts INTEGER DEFAULT 0,
+  demand_rank TEXT,
+  source TEXT
 );
 
 -- BSR 日次履歴の正規化テーブル（参照用。重複した可視化が要らなければ未使用でも可）
@@ -237,6 +240,10 @@ def init_db():
         "ALTER TABLE inventory ADD COLUMN bsr_current INTEGER",
         "ALTER TABLE inventory ADD COLUMN bsr_history_json TEXT",  # 90日履歴（[(date, bsr), ...]）
         "ALTER TABLE inventory ADD COLUMN bsr_updated_at TEXT",
+        # market_bsr_meta 拡張（自社仕入れ対象連動版）
+        "ALTER TABLE market_bsr_meta ADD COLUMN fetch_attempts INTEGER DEFAULT 0",
+        "ALTER TABLE market_bsr_meta ADD COLUMN demand_rank TEXT",
+        "ALTER TABLE market_bsr_meta ADD COLUMN source TEXT",
     ]:
         try:
             conn.execute(alter)

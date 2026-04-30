@@ -634,22 +634,14 @@ def sync_market_bsr_one() -> dict:
         result["paused"] = True
         return result
 
-    # 対象範囲（new_top_100 = 1-100位 / used_mid_200 = 101-200位）
-    target_range = get_setting("market_bsr_target_range", "new_top_100")
-    if target_range == "used_mid_200":
-        rank_lo, rank_hi = 101, 200
-    else:  # new_top_100
-        rank_lo, rank_hi = 1, 100
-
-    # 対象範囲のうち最も古い更新の ASIN を1件選ぶ
+    # 全 market_bsr_meta から「最も古い更新（NULL最優先）」を1件選ぶ
+    # （自社仕入れ対象リスト連動版: 範囲フィルタは撤廃）
     with get_db() as conn:
         row = conn.execute(
             "SELECT asin FROM market_bsr_meta "
-            "WHERE rank_in_category IS NOT NULL "
-            "  AND rank_in_category BETWEEN ? AND ? "
-            "ORDER BY (bsr_updated_at IS NULL) DESC, bsr_updated_at ASC, rank_in_category ASC "
-            "LIMIT 1",
-            (rank_lo, rank_hi),
+            "ORDER BY (bsr_updated_at IS NULL) DESC, bsr_updated_at ASC, "
+            "         COALESCE(fetch_attempts, 0) ASC "
+            "LIMIT 1"
         ).fetchone()
     if not row:
         result["status"] = "skip_no_target"
@@ -682,8 +674,16 @@ def sync_market_bsr_one() -> dict:
             f"{datetime.utcnow().isoformat()} asin={asin} err={type(e).__name__}: {e}\n",
             encoding="utf-8",
         )
+        # 失敗時: fetch_attempts++、bsr_updated_at は進める（次の周回で再試行候補から外す）
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE market_bsr_meta SET bsr_updated_at=?, "
+                "  fetch_attempts=COALESCE(fetch_attempts,0)+1 WHERE asin=?",
+                (datetime.utcnow().isoformat(), asin),
+            )
         result["status"] = "error"
         result["error"] = str(e)[:200]
+        _maybe_round_maintenance(result)
         return result
 
     products = payload.get("products") or []
@@ -692,9 +692,11 @@ def sync_market_bsr_one() -> dict:
         # 失敗でも updated_at は進めて先に進む（永遠に詰まるのを防止）
         with get_db() as conn:
             conn.execute(
-                "UPDATE market_bsr_meta SET bsr_updated_at=? WHERE asin=?",
+                "UPDATE market_bsr_meta SET bsr_updated_at=?, "
+                "  fetch_attempts=COALESCE(fetch_attempts,0)+1 WHERE asin=?",
                 (datetime.utcnow().isoformat(), asin),
             )
+        _maybe_round_maintenance(result)
         return result
 
     p = products[0]
@@ -731,8 +733,9 @@ def sync_market_bsr_one() -> dict:
     now_iso = datetime.utcnow().isoformat()
     with get_db() as conn:
         conn.execute(
-            "UPDATE market_bsr_meta SET title=?, current_price=?, bsr_current=?, "
-            "  bsr_history_json=?, bsr_updated_at=? WHERE asin=?",
+            "UPDATE market_bsr_meta SET title=COALESCE(?, title), current_price=?, "
+            "  bsr_current=?, bsr_history_json=?, bsr_updated_at=?, fetch_attempts=0 "
+            "WHERE asin=?",
             (title, price, bsr_current, bsr_json, now_iso, asin),
         )
         # history テーブルにも upsert
@@ -752,7 +755,112 @@ def sync_market_bsr_one() -> dict:
         result["score_recomputed"] = True
     except Exception as e:
         result["score_recomputed_error"] = str(e)[:200]
+
+    _maybe_round_maintenance(result)
     return result
+
+
+def _maybe_round_maintenance(result: dict) -> None:
+    """全 ASIN が直近17日以内に更新されていれば round_maintenance を呼ぶ。
+    1日1回までに制限。result に round_maintenance キーで結果を載せる。"""
+    from db import get_setting, set_setting
+    try:
+        # 1日1回フラグ
+        last = get_setting("market_bsr_last_round_at", "")
+        if last:
+            try:
+                last_dt = datetime.fromisoformat(last)
+                if (datetime.now() - last_dt).total_seconds() < 86400:
+                    return
+            except ValueError:
+                pass
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "       SUM(CASE WHEN bsr_updated_at IS NOT NULL "
+                "                 AND datetime(bsr_updated_at) >= datetime('now','-17 days') "
+                "                THEN 1 ELSE 0 END) AS recent "
+                "FROM market_bsr_meta"
+            ).fetchone()
+        total = row["total"] or 0
+        recent = row["recent"] or 0
+        if total == 0 or recent < total:
+            return
+        rm_result = round_maintenance()
+        result["round_maintenance"] = rm_result
+    except Exception as e:
+        result["round_maintenance_error"] = str(e)[:200]
+
+
+def round_maintenance() -> dict:
+    """1周完了時のメンテナンス: 注文ASIN取り込み + ゾンビ除去 + サイズ調整。
+
+    - 過去1年の注文ASINで market_bsr_meta に無いものを source='order_history' で追加
+    - bsr_current が取れた ASIN を上位（=BSR小さい順）から keep_count 件保持
+    - bsr_current が NULL かつ未試行（bsr_updated_at IS NULL）は全件保持（取得待ち）
+    - bsr_current が NULL かつ fetch_attempts>=3 はゾンビとして除去
+    - keep_count = max(1000, 1500 - 取得待ち件数)
+    """
+    from db import set_setting
+    one_year_ago = (datetime.now() - timedelta(days=365)).isoformat()[:10]
+    with get_db() as conn:
+        order_asins = [r[0] for r in conn.execute(
+            "SELECT DISTINCT oi.asin FROM order_items oi "
+            "JOIN orders o ON o.amazon_order_id = oi.amazon_order_id "
+            "WHERE o.order_status IN ('Shipped','Unshipped') "
+            "  AND substr(o.purchase_date,1,10) >= ? "
+            "  AND oi.asin IS NOT NULL AND oi.asin != ''",
+            (one_year_ago,)
+        ).fetchall()]
+
+        existing = {r[0] for r in conn.execute(
+            "SELECT asin FROM market_bsr_meta"
+        ).fetchall()}
+        new_asins = [a for a in order_asins if a not in existing]
+        for asin in new_asins:
+            conn.execute(
+                "INSERT INTO market_bsr_meta(asin, source, fetch_attempts) "
+                "VALUES(?, 'order_history', 0)",
+                (asin,)
+            )
+
+        rows = conn.execute(
+            "SELECT asin, bsr_current, bsr_updated_at, "
+            "       COALESCE(fetch_attempts,0) AS fetch_attempts "
+            "FROM market_bsr_meta"
+        ).fetchall()
+        bsr_known   = [r for r in rows if r["bsr_current"] is not None]
+        bsr_pending = [r for r in rows if r["bsr_current"] is None and r["bsr_updated_at"] is None]
+        bsr_failed  = [r for r in rows if r["bsr_current"] is None
+                                       and r["bsr_updated_at"] is not None
+                                       and r["fetch_attempts"] >= 3]
+
+        keep_count = max(1000, 1500 - len(bsr_pending))
+        bsr_known_sorted = sorted(bsr_known, key=lambda r: r["bsr_current"])
+        keep_known_asins = {r["asin"] for r in bsr_known_sorted[:keep_count]}
+        keep_pending_asins = {r["asin"] for r in bsr_pending}
+        keep_set = keep_known_asins | keep_pending_asins
+
+        all_asins = {r["asin"] for r in rows}
+        remove_asins = all_asins - keep_set
+        if remove_asins:
+            conn.executemany(
+                "DELETE FROM market_bsr_meta WHERE asin = ?",
+                [(a,) for a in remove_asins]
+            )
+            conn.executemany(
+                "DELETE FROM market_bsr_history WHERE asin = ?",
+                [(a,) for a in remove_asins]
+            )
+
+    set_setting("market_bsr_last_round_at", datetime.now().isoformat())
+    return {
+        "added_from_orders": len(new_asins),
+        "kept_known": len(keep_known_asins),
+        "kept_pending": len(keep_pending_asins),
+        "removed_failed": len(bsr_failed),
+        "removed_total": len(remove_asins),
+    }
 
 
 def recompute_market_score_cache() -> int:

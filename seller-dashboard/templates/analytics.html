@@ -242,11 +242,11 @@ function mkChart(id, data, withCum) {
       spanGaps: true,
     });
   }
-  // カメラ市場スコア（トップN ベストセラーから算出）
+  // 自社事業の市況スコア（仕入れ対象リスト + 過去1年の注文履歴から算出）
   const hasMarketFull = data.some(d => d && d.market_full_score !== undefined && d.market_full_score !== null);
   if (hasMarketFull) {
     datasets.push({
-      type: 'line', label: 'カメラ市場スコア（売れ筋トップN）',
+      type: 'line', label: '自社事業の市況スコア（仕入れ対象連動）',
       data: data.map(d => d.market_full_score),
       borderColor: '#f97316',
       backgroundColor: '#f97316',
@@ -271,7 +271,7 @@ function mkChart(id, data, withCum) {
               const bsr = data[i] && data[i].market_bsr;
               return `${lbl}: ${v}` + (bsr ? `（BSR中央値 ${bsr.toLocaleString()}位）` : '');
             }
-            if (lbl.indexOf('カメラ市場スコア') === 0) {
+            if (lbl.indexOf('自社事業の市況スコア') === 0) {
               const i = ctx.dataIndex;
               const bsr = data[i] && data[i].market_full_bsr;
               return `${lbl}: ${v}` + (bsr ? `（BSR中央値 ${bsr.toLocaleString()}位）` : '');
