@@ -1,6 +1,6 @@
 """自社仕入れ対象 ASIN（需要 S/A/B）を market_bsr_meta に投入。
 
-データソース: C:\\claude\\_target_asins.json
+データソース: data/target_asins.json
   各要素: {sheet, asin, demand, model, sales, stock, ...}
 
 既存 market_bsr_meta レコードはすべて DELETE してから再投入。
@@ -11,9 +11,13 @@
   - title = model
   - fetch_attempts = 0
 
+メーカー・カテゴリ偏りを避けるため、投入前にランダムシャッフル。
+取得時の順序もランダム化されるので、途中経過のスコアもバランス保つ。
+
 実行: cd C:\\claude\\seller-dashboard && python seed_market_asins.py
 """
 import json
+import random
 import sys
 import io
 from pathlib import Path
@@ -23,7 +27,8 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 from db import get_db, init_db
 
-JSON_PATH = Path(r"C:\claude\_target_asins.json")
+# プロジェクト内のデータファイル（配布リポジトリにも含まれる）
+JSON_PATH = Path(__file__).resolve().parent / "data" / "target_asins.json"
 
 
 def main():
@@ -59,6 +64,9 @@ def main():
     by_demand = {"S": 0, "A": 0, "B": 0}
     for r in rows:
         by_demand[r["demand"]] = by_demand.get(r["demand"], 0) + 1
+
+    # メーカー・カテゴリ偏り回避のためシャッフル（再現性を持たせるためseed固定）
+    random.Random(42).shuffle(rows)
 
     with get_db() as conn:
         # 既存を全削除（旧 Best Sellers ベースの 8,658件を撤廃）

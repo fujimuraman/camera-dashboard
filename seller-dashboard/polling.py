@@ -637,10 +637,11 @@ def sync_market_bsr_one() -> dict:
     # 全 market_bsr_meta から「最も古い更新（NULL最優先）」を1件選ぶ
     # （自社仕入れ対象リスト連動版: 範囲フィルタは撤廃）
     with get_db() as conn:
+        # 同条件内ではランダム順（メーカー・カテゴリ偏りを避けるため）
         row = conn.execute(
             "SELECT asin FROM market_bsr_meta "
             "ORDER BY (bsr_updated_at IS NULL) DESC, bsr_updated_at ASC, "
-            "         COALESCE(fetch_attempts, 0) ASC "
+            "         COALESCE(fetch_attempts, 0) ASC, RANDOM() "
             "LIMIT 1"
         ).fetchone()
     if not row:
