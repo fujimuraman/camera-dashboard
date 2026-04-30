@@ -201,43 +201,66 @@
   </div>
 </form>
 
-<!-- ⑤-2 カメラ市況分析（自社仕入れ対象リスト連動版） -->
+<!-- ⑤-2 カメラ市況分析 -->
 <form method="post" class="mb-4">
   <input type="hidden" name="form_type" value="market_bsr">
   <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
-      <span>📊 カメラ市況分析（自社仕入れ対象リスト連動）</span>
+      <span>📊 カメラ市況分析（市場全体スコア）</span>
       <span class="badge bg-secondary">オプション</span>
     </div>
     <div class="card-body">
       <p class="small text-muted mb-2">
-        自社が仕入れ対象としているカメラ・レンズ（需要 S/A/B）+ 過去1年の注文履歴 ASIN を取得して、
-        <strong>自社事業に最も近い市況スコア</strong>を算出します。
+        Amazon JP のカメラ・レンズの<strong>主要ASINリスト</strong>（初期約1,500件）の販売動向を継続的に追跡し、
+        市場全体の活況度スコアを算出します。売上分析グラフに自店の販売スコアと並べて表示することで、
+        売上不振時に「市場全体の冷え込み」か「自店固有の問題」かを切り分けられます。
       </p>
-      <div class="alert alert-info small mb-3">
-        📋 取得対象: <strong>{{ market_bsr_seeded|default(0) }}件</strong>
-        / 取得済み: <strong>{{ market_bsr_fetched|default(0) }}件</strong>
-        {% if market_bsr_last_score %} / 直近スコア: <strong>{{ market_bsr_last_score }}</strong>{% endif %}
-        {% if market_bsr_last_round_at %} / 最終ループ: {{ market_bsr_last_round_at[:10] }}{% endif %}
-        {% if market_bsr_paused %} / <span class="badge bg-warning text-dark">休止中（トークン回復待ち）</span>{% endif %}
+
+      {% if not keepa_api_key %}
+      <div class="alert alert-warning small mb-3">
+        ⚠️ <strong>Keepa API key が未設定です</strong>。
+        この機能は上の「📈 Keepa API」セクションで API key を設定してから有効化してください。
       </div>
+      {% endif %}
+
+      <div class="alert alert-info small mb-3">
+        <strong>追跡状況:</strong>
+        対象 <strong>{{ market_bsr_seeded|default(0) }}件</strong>
+        / 取得済 <strong>{{ market_bsr_fetched|default(0) }}件</strong>
+        {% if market_bsr_last_score %}<br><strong>直近スコア:</strong> {{ market_bsr_last_score }}{% endif %}
+        {% if market_bsr_last_round_at %}<br><strong>最終リスト更新:</strong> {{ market_bsr_last_round_at[:10] }}{% endif %}
+        {% if market_bsr_paused %}<br><span class="badge bg-warning text-dark">休止中（Keepaトークン回復待ち）</span>{% endif %}
+      </div>
+
       <div class="form-check mb-3">
         <input class="form-check-input" type="checkbox" name="market_bsr_enabled"
                id="market_bsr_enabled"
+               {% if not keepa_api_key %}disabled{% endif %}
                {% if market_bsr_enabled %}checked{% endif %}>
         <label class="form-check-label" for="market_bsr_enabled">
-          市場 BSR の継続取得を有効化
+          市場全体スコアの取得を有効化
         </label>
       </div>
       <div class="text-end">
-        <button class="btn btn-primary">保存</button>
+        <button class="btn btn-primary" {% if not keepa_api_key %}disabled{% endif %}>保存</button>
       </div>
-      <p class="small text-muted mt-2 mb-0">
-        ※ 14.4分に1件取得、リスト全件で約16日で1周。1周完了時に注文履歴 ASIN を取り込み、
-        BSR上位1,500件 + 未取得 のリストに自動更新します。<br>
-        ※ 月のトークン消費は約 18,000（プラン枠の 8.3%）。<br>
-        ※ 残量 50 未満で自動停止、200 で自動再開。
-      </p>
+
+      <hr class="my-3">
+
+      <p class="small text-muted mb-1"><strong>動作の仕組み</strong></p>
+      <ul class="small text-muted mb-3">
+        <li>初期登録ASIN（カメラ・レンズの主要商品）と、自店の過去1年の注文履歴ASINを統合したリストを継続追跡します。</li>
+        <li>1日あたり約100件のペースで均等に取得し、約16日でリスト全件を1周します。</li>
+        <li>1周ごとにリストを自動メンテナンス：注文履歴から新規ASINを取り込み、市場で売れなくなった商品を除外します。<br>
+            運用するほど自店の取扱商品に最適化されたリストに育っていきます。</li>
+      </ul>
+
+      <p class="small text-muted mb-1"><strong>Keepa トークン消費</strong></p>
+      <ul class="small text-muted mb-0">
+        <li>月の消費量: 約18,000トークン（Basic プラン枠の約8.3%）。</li>
+        <li>他に Keepa を使用するツールがある場合は合算量にご注意ください。</li>
+        <li>トークン残量が低下したら自動停止し、回復後に自動再開します（他ツールへの影響を避けるため）。</li>
+      </ul>
     </div>
   </div>
 </form>
