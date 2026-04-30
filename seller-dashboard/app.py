@@ -2354,17 +2354,96 @@ def create_app():
                 else:
                     flash("Keepa API key を保存しました", "success")
             elif form_type == "market_bsr":
-                enabled = "1" if request.form.get("market_bsr_enabled") == "on" else "0"
-                set_setting("market_bsr_enabled", enabled)
-                # 設定変更時は paused リセット
-                set_setting("market_bsr_paused", "0")
-                # スケジューラを再登録
-                try:
-                    if hasattr(app, "reschedule_market_bsr_job"):
-                        app.reschedule_market_bsr_job()
-                except Exception as _e:
-                    app.logger.warning(f"reschedule_market_bsr failed: {_e}")
-                flash(f"カメラ市況分析: {'有効' if enabled == '1' else '無効'}（自社仕入れ対象連動）", "success")
+                # CSV アップロードアクションか通常の設定保存か判定
+                csv_file = request.files.get("market_bsr_csv")
+                if request.form.get("csv_action") == "1" and csv_file and csv_file.filename:
+                    # CSV アップロード処理
+                    import csv as _csv
+                    import re as _re
+                    mode = request.form.get("market_bsr_csv_mode", "append")
+                    asin_re = _re.compile(r"^[A-Z0-9]{10}$")
+                    raw = csv_file.read()
+                    # BOM 除去 + デコード
+                    if raw.startswith(b"\xef\xbb\xbf"):
+                        raw = raw[3:]
+                    try:
+                        text = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = raw.decode("cp932", errors="replace")
+                    reader = _csv.DictReader(text.splitlines())
+                    rows_added = 0
+                    rows_skipped = 0
+                    seen = set()
+                    valid_rows = []
+                    for row in reader:
+                        asin = (row.get("asin") or row.get("ASIN") or "").strip().upper()
+                        if not asin_re.match(asin) or asin in seen:
+                            rows_skipped += 1
+                            continue
+                        seen.add(asin)
+                        valid_rows.append({
+                            "asin": asin,
+                            "category": (row.get("category") or row.get("カテゴリ") or "").strip(),
+                            "title": (row.get("title") or row.get("商品名") or "").strip(),
+                        })
+                    with get_db() as conn:
+                        if mode == "replace":
+                            removed = conn.execute("SELECT COUNT(*) FROM market_bsr_meta").fetchone()[0]
+                            conn.execute("DELETE FROM market_bsr_meta")
+                            conn.execute("DELETE FROM market_bsr_history")
+                        else:
+                            removed = 0
+                        existing = {r[0] for r in conn.execute("SELECT asin FROM market_bsr_meta").fetchall()}
+                        for v in valid_rows:
+                            if v["asin"] in existing:
+                                rows_skipped += 1
+                                continue
+                            conn.execute(
+                                "INSERT INTO market_bsr_meta(asin, category, title, source, fetch_attempts) "
+                                "VALUES(?, ?, ?, 'csv_upload', 0)",
+                                (v["asin"], v["category"] or None, v["title"] or None),
+                            )
+                            rows_added += 1
+                    flash(
+                        f"CSV処理完了: 追加 {rows_added}件 / スキップ {rows_skipped}件"
+                        + (f" / 削除 {removed}件" if mode == "replace" else ""),
+                        "success",
+                    )
+                else:
+                    # 通常の設定保存
+                    enabled = "1" if request.form.get("market_bsr_enabled") == "on" else "0"
+                    set_setting("market_bsr_enabled", enabled)
+                    use_default = "1" if request.form.get("market_bsr_use_default_list") == "on" else "0"
+                    prev_use_default = get_setting("market_bsr_use_default_list", "1")
+                    set_setting("market_bsr_use_default_list", use_default)
+                    # OFFに切り替わったら target_list source の ASIN を削除
+                    msg_extra = ""
+                    if prev_use_default == "1" and use_default == "0":
+                        with get_db() as conn:
+                            removed = conn.execute(
+                                "SELECT COUNT(*) FROM market_bsr_meta WHERE source='target_list'"
+                            ).fetchone()[0]
+                            conn.execute("DELETE FROM market_bsr_meta WHERE source='target_list'")
+                            conn.execute(
+                                "DELETE FROM market_bsr_history "
+                                "WHERE asin NOT IN (SELECT asin FROM market_bsr_meta)"
+                            )
+                        msg_extra = f" / デフォルトカメラリスト {removed}件削除"
+                    elif prev_use_default == "0" and use_default == "1":
+                        # ON に戻した場合は seed を再実行（CLI 経由の旨を案内）
+                        msg_extra = " / デフォルトリストを再投入する場合は seed_market_asins.py を実行"
+                    # 設定変更時は paused リセット
+                    set_setting("market_bsr_paused", "0")
+                    # スケジューラを再登録
+                    try:
+                        if hasattr(app, "reschedule_market_bsr_job"):
+                            app.reschedule_market_bsr_job()
+                    except Exception as _e:
+                        app.logger.warning(f"reschedule_market_bsr failed: {_e}")
+                    flash(
+                        f"市況分析: {'有効' if enabled == '1' else '無効'}{msg_extra}",
+                        "success",
+                    )
             elif form_type == "password":
                 cur = request.form.get("current_password", "")
                 new_ = request.form.get("new_password", "")
@@ -2454,6 +2533,7 @@ def create_app():
             "price_diverge_threshold": get_setting("price_diverge_threshold", "1000"),
             "inline_price_apply_mode": get_setting("inline_price_apply_mode", "manual"),
             "market_bsr_enabled": get_setting("market_bsr_enabled", "0") == "1",
+            "market_bsr_use_default_list": get_setting("market_bsr_use_default_list", "1") == "1",
             "market_bsr_paused": get_setting("market_bsr_paused", "0") == "1",
             "market_bsr_last_round_at": get_setting("market_bsr_last_round_at", ""),
             "current_username": current_user.username,
