@@ -1641,6 +1641,20 @@ def create_app():
         prev_start_date = _prev_first.strftime("%Y-%m-%d")
         prev_end_date = _prev_end.strftime("%Y-%m-%d")
 
+        # ----- グラフ表示用の横軸範囲（データ集計範囲とは別） -----
+        # 要件: 当月日別は1日〜月末日、年間月別は1〜12月、その他はデータ範囲どおり
+        # （未来日もラベルは表示するが値は0で埋まる）
+        from calendar import monthrange as _monthrange
+        if preset == "this":
+            # 当月日別: 月初〜月末日
+            chart_daily_start = _sd  # 月初（既に day=1）
+            _last_day = _monthrange(_sd.year, _sd.month)[1]
+            chart_daily_end = _sd.replace(day=_last_day)
+        else:
+            # prev/year/custom はデータ範囲をそのまま（prev は元から月末まで）
+            chart_daily_start = _sd
+            chart_daily_end = _ed
+
         with get_db() as conn:
             # （日別/月別/曜日別/時間帯別のデータは下部で Python 集計するため SQL グループは不要）
             params = (start_date, end_date)
@@ -1889,10 +1903,11 @@ def create_app():
         per_day_exp = fixed_total_for_period / days_in_period if days_in_period else 0
 
         # 日別（全日付 0 埋め＋累計）
+        # 横軸範囲は chart_daily_start〜chart_daily_end（preset=this は月末まで延長、未来日は値0）
         daily = []
         cum_s = 0; cum_p = 0
-        cur = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        cur = datetime.combine(chart_daily_start, datetime.min.time())
+        end_dt = datetime.combine(chart_daily_end, datetime.min.time())
         while cur <= end_dt:
             key = cur.strftime("%Y-%m-%d")
             b = by_day.get(key, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
@@ -1947,20 +1962,29 @@ def create_app():
                 d["cum_prev"] = 0
 
         # 月別
+        # 要件: preset=year はその年の1〜12月を全て横軸表示（データなし月は0）
+        # それ以外（this/prev/custom）はデータがある月のみ
+        if preset == "year":
+            month_keys = [f"{_sd.year}-{m:02d}" for m in range(1, 13)]
+        else:
+            month_keys = sorted(by_month.keys())
         monthly = []
-        for k in sorted(by_month.keys()):
-            b = by_month[k]
+        for k in month_keys:
+            b = by_month.get(k, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
             # 月別は base_fee をその月分だけ＆other_exp は月按分、qty × per_item
             per_month_exp = (ship_base + (other_exp / max(1, len(ym_set))))
             prof = _profit_of(b, per_month_exp)
             monthly.append({"k": k, "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
         # 月別: 前期間（年なら前年）の月別売上を同じ月数で並べる
-        prev_ym_sorted = sorted(prev_by_month.keys())
+        if preset == "year":
+            prev_ym_sorted = [f"{_sd.year - 1}-{m:02d}" for m in range(1, 13)]
+        else:
+            prev_ym_sorted = sorted(prev_by_month.keys())
         # monthly でも累計を渡す（cum_prev=前期間の累計売上）
         _prev_cum_m = 0
         for i, m in enumerate(monthly):
             if i < len(prev_ym_sorted):
-                _prev_cum_m += prev_by_month[prev_ym_sorted[i]]
+                _prev_cum_m += prev_by_month.get(prev_ym_sorted[i], 0)
             m["cum_prev"] = _prev_cum_m
 
         # ----- 市場活況度スコア（BSR 履歴から月別中央値）-----
