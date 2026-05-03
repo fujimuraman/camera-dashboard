@@ -263,14 +263,14 @@ function mkChart(id, data, withCum, opts) {
     backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 6
   });
   if (withCumQty) {
-    // 累計販売数（y2、オレンジ系の塗りつぶし線）
+    // 累計販売数（y2、オレンジ系の線）
     datasets.push({
       type: 'line', label: '累計販売数',
       data: data.map(d => (d.cum_qty === undefined ? null : d.cum_qty)),
       borderColor: C.cumQty,
-      backgroundColor: C.cumQtyFill,
+      backgroundColor: C.cumQty,
       pointRadius: 2, tension: 0.2, yAxisID: 'y2', order: 7,
-      fill: true, spanGaps: true,
+      fill: false, spanGaps: true,
     });
   }
   if (withInventory) {
