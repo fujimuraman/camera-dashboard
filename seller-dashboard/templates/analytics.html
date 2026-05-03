@@ -354,8 +354,8 @@ function mkChart(id, data, withCum, opts) {
 }
 mkChart('chMonthly', {{ monthly|tojson }}, false, { withProfitBar: true, withInventory: true, withCumQty: true, periodLabel: '月次' });
 mkChart('chDaily',   {{ daily|tojson }},   true,  { withInventory: true, withCumQty: true, periodLabel: '日次' });
-mkChart('chDow',     {{ dow|tojson }},     false);
-mkChart('chHour',    {{ hour|tojson }},    false);
+mkChart('chDow',     {{ dow|tojson }},     false, { periodLabel: '曜日別' });
+mkChart('chHour',    {{ hour|tojson }},    false, { periodLabel: '時間帯別' });
 
 // === 円グラフ: 販売実績の分布（経過日数別） ===
 {% if sold_buckets %}
