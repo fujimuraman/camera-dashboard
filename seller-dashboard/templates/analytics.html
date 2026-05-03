@@ -230,9 +230,9 @@ function mkChart(id, data, withCum, opts) {
       pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1
     });
     datasets.push({
-      type: 'line', label: '累計利益 (円)', data: data.map(d => d.cum_profit || 0),
+      type: 'line', label: '累計利益 (円・別スケール)', data: data.map(d => d.cum_profit || 0),
       borderColor: C.profitCum, backgroundColor: C.profitCum,
-      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 2
+      pointRadius: 2, tension: 0.2, yAxisID: 'yProfitCum', order: 2
     });
     if (data.length && data[0].cum_prev !== undefined) {
       datasets.push({
@@ -248,7 +248,14 @@ function mkChart(id, data, withCum, opts) {
       type: 'linear', position: 'left', min: 0,
       ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
       grid: { drawOnChartArea: false }, offset: true,
-      title: { display: true, text: '累計 売上/利益', color: C.salesCum, font: titleFont }
+      title: { display: true, text: '累計売上', color: C.salesCum, font: titleFont }
+    };
+    // 累計利益は単独スケール（表示しない hidden 軸）。
+    // 累計売上 と桁が違うため同軸だと変動が見えなくなるので、
+    // 利益独自の min/max で auto-fit させて変動を強調する。
+    scales.yProfitCum = {
+      type: 'linear', position: 'left', min: 0,
+      display: false,  // 軸目盛・タイトルは出さない
     };
     // 累計あり時は左軸に「日次/月次売上」を表示してもよいが、
     // すでに上の scales.y で title='売上' を設定しているのでここでは何もしない
