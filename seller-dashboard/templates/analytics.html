@@ -193,6 +193,7 @@ function mkChart(id, data, withCum, opts) {
   const withProfitBar = !!opts.withProfitBar;     // 月別だけ利益棒も追加
   const withInventory = !!opts.withInventory;     // 月別/日別: 在庫数の推移を線で
   const withCumQty    = !!opts.withCumQty;        // 月別/日別: 累計販売数の線
+  const periodLabel   = opts.periodLabel || '日次';  // '月次' / '日次' などのラベル接頭辞
   // 凡例順を ダッシュボード と統一: 累計売上 → 累計利益 → 前期間累計売上 → 日次売上 → 販売数
   const datasets = [];
   // 軸幅圧縮: ticks フォントを 10px、maxTicksLimit を 5 に、title フォントも小さめ
@@ -202,11 +203,12 @@ function mkChart(id, data, withCum, opts) {
     // 左軸は 0 始まり固定: マイナス領域は描画しない（負値は線がはみ出ない）
     y:  { type: 'linear', position: 'left', min: 0, beginAtZero: true,
           ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
-          grid: { color: 'rgba(0,0,0,0.06)' } },
+          grid: { color: 'rgba(0,0,0,0.06)' },
+          title: { display: true, text: '売上', color: C.sales, font: titleFont } },
     y1: { type: 'linear', position: 'right', min: 0,
           ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 5, font: tickFont },
           grid: { drawOnChartArea: false },
-          title: { display: true, text: '日次販売数', color: C.qty, font: titleFont } }
+          title: { display: true, text: '販売数', color: C.qty, font: titleFont } }
   };
   // 累計販売数 or 在庫数 のどちらかを描く時だけ y2 を出す
   if (withCumQty || withInventory) {
@@ -246,10 +248,11 @@ function mkChart(id, data, withCum, opts) {
       grid: { drawOnChartArea: false }, offset: true,
       title: { display: true, text: '累計 売上/利益', color: C.salesCum, font: titleFont }
     };
-    scales.y.title = { display: true, text: '日次売上', color: C.sales, font: titleFont };
+    // 累計あり時は左軸に「日次/月次売上」を表示してもよいが、
+    // すでに上の scales.y で title='売上' を設定しているのでここでは何もしない
   }
   datasets.push({
-    type: 'bar', label: '日次売上 (円)', data: data.map(d => d.sales),
+    type: 'bar', label: periodLabel + '売上 (円)', data: data.map(d => d.sales),
     backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4
   });
   if (withProfitBar) {
@@ -288,12 +291,13 @@ function mkChart(id, data, withCum, opts) {
   }
   // 市場活況度スコア（月別タブのみ・BSR 中央値から算出）
   // 線は折れ線、右軸 y1（販売数と同居）。null は非表示で skip。
+  // スコア系統は紫で統一（販売数オレンジと色被りを避ける）
   const hasMarket = data.some(d => d && d.market_score !== undefined && d.market_score !== null);
   if (hasMarket) {
     datasets.push({
       type: 'line', label: '自社在庫スコア',
       data: data.map(d => d.market_score),
-      borderColor: '#a855f7',
+      borderColor: '#a855f7',  // purple-500（明るめ）
       backgroundColor: '#a855f7',
       pointRadius: 3, tension: 0.2, yAxisID: 'y1', order: 6,
       spanGaps: true,
@@ -305,10 +309,11 @@ function mkChart(id, data, withCum, opts) {
     datasets.push({
       type: 'line', label: '自社事業の市況スコア（仕入れ対象連動）',
       data: data.map(d => d.market_full_score),
-      borderColor: '#f97316',
-      backgroundColor: '#f97316',
+      borderColor: '#6d28d9',  // violet-700（濃いめ）。在庫スコアと同系統で区別可能
+      backgroundColor: '#6d28d9',
       pointRadius: 3, tension: 0.2, yAxisID: 'y1', order: 7,
       spanGaps: true,
+      borderDash: [5, 3],  // 仕入れ対象連動はダッシュで区別
     });
   }
   return new Chart(document.getElementById(id), {
@@ -345,8 +350,8 @@ function mkChart(id, data, withCum, opts) {
     }
   });
 }
-mkChart('chMonthly', {{ monthly|tojson }}, false, { withProfitBar: true, withInventory: true, withCumQty: true });
-mkChart('chDaily',   {{ daily|tojson }},   true,  { withInventory: true, withCumQty: true });
+mkChart('chMonthly', {{ monthly|tojson }}, false, { withProfitBar: true, withInventory: true, withCumQty: true, periodLabel: '月次' });
+mkChart('chDaily',   {{ daily|tojson }},   true,  { withInventory: true, withCumQty: true, periodLabel: '日次' });
 mkChart('chDow',     {{ dow|tojson }},     false);
 mkChart('chHour',    {{ hour|tojson }},    false);
 
