@@ -160,10 +160,13 @@
 
 {% block scripts %}
 <script>
-// ダッシュボードと同じカラー
+// 売上系=青、利益=緑（売上系の延長として）、個数系=オレンジで統一
 const C = {
   sales:'#0071e3', salesCum:'#005bb5',
-  qty:'#ff9500',
+  qty:'#ff9500',           // 日次販売数 棒
+  cumQty:'#fb923c',        // 累計販売数 線（オレンジ薄め、塗りつぶし）
+  cumQtyFill:'rgba(251,146,60,0.18)',
+  inv:'#ea580c',           // 在庫数 線（オレンジ濃いめ、実線）
   profit:'#34c759', profitCum:'#1f9a4a',
 };
 const rgba = (hex, a) => {
@@ -192,23 +195,25 @@ function mkChart(id, data, withCum, opts) {
   const withCumQty    = !!opts.withCumQty;        // 月別/日別: 累計販売数の線
   // 凡例順を ダッシュボード と統一: 累計売上 → 累計利益 → 前期間累計売上 → 日次売上 → 販売数
   const datasets = [];
-  // y1=日次販売数（個）、y2=累計販売数+在庫数（個、線のみ）。スケール分離で棒が圧縮されない。
+  // 軸幅圧縮: ticks フォントを 10px、maxTicksLimit を 5 に、title フォントも小さめ
+  const tickFont  = { size: 10 };
+  const titleFont = { size: 10, weight: 'normal' };
   const scales = {
     y:  { type: 'linear', position: 'left',
-          ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 6 },
+          ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
           grid: { color: 'rgba(0,0,0,0.06)' } },
     y1: { type: 'linear', position: 'right',
-          ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 6 },
+          ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 5, font: tickFont },
           grid: { drawOnChartArea: false },
-          title: { display: true, text: '日次販売数', color: C.qty } }
+          title: { display: true, text: '日次販売数', color: C.qty, font: titleFont } }
   };
   // 累計販売数 or 在庫数 のどちらかを描く時だけ y2 を出す
   if (withCumQty || withInventory) {
     scales.y2 = {
       type: 'linear', position: 'right',
-      ticks: { color: '#0ea5e9', callback: fmtShort, maxTicksLimit: 6 },
+      ticks: { color: C.inv, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
       grid: { drawOnChartArea: false },
-      title: { display: true, text: '累計販売数 / 在庫数', color: '#0ea5e9' }
+      title: { display: true, text: '累計販売数 / 在庫数', color: C.inv, font: titleFont }
     };
   }
   // ※ Chart.js は dataset.order の昇順で凡例を並べるため、表示順に番号を振る
@@ -236,11 +241,11 @@ function mkChart(id, data, withCum, opts) {
     }
     scales.yCum = {
       type: 'linear', position: 'left',
-      ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 6 },
+      ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
       grid: { drawOnChartArea: false }, offset: true,
-      title: { display: true, text: '累計 売上/利益', color: C.salesCum }
+      title: { display: true, text: '累計 売上/利益', color: C.salesCum, font: titleFont }
     };
-    scales.y.title = { display: true, text: '日次売上', color: C.sales };
+    scales.y.title = { display: true, text: '日次売上', color: C.sales, font: titleFont };
   }
   datasets.push({
     type: 'bar', label: '日次売上 (円)', data: data.map(d => d.sales),
@@ -258,26 +263,26 @@ function mkChart(id, data, withCum, opts) {
     backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 6
   });
   if (withCumQty) {
-    // 累計販売数（y2、青系の塗りつぶし線）
+    // 累計販売数（y2、オレンジ系の塗りつぶし線）
     datasets.push({
       type: 'line', label: '累計販売数',
       data: data.map(d => (d.cum_qty === undefined ? null : d.cum_qty)),
-      borderColor: '#1d4ed8',
-      backgroundColor: 'rgba(29,78,216,0.12)',
+      borderColor: C.cumQty,
+      backgroundColor: C.cumQtyFill,
       pointRadius: 2, tension: 0.2, yAxisID: 'y2', order: 7,
       fill: true, spanGaps: true,
     });
   }
   if (withInventory) {
-    // 在庫数（実測スナップショット優先、無い日は推定）。y2 上に点線で。
+    // 在庫数（実測スナップショット優先、無い日は推定）。y2 上に実線で。
     // tooltip で「実測 / 推定」を区別表示する（inv_actual フラグから）
     datasets.push({
       type: 'line', label: '在庫数',
       data: data.map(d => (d.inv_est === undefined || d.inv_est === null ? null : d.inv_est)),
-      borderColor: '#0ea5e9',
-      backgroundColor: '#0ea5e9',
+      borderColor: C.inv,
+      backgroundColor: C.inv,
       pointRadius: 2, tension: 0.2, yAxisID: 'y2', order: 8,
-      borderDash: [4, 3], spanGaps: true,
+      spanGaps: true,
     });
   }
   // 市場活況度スコア（月別タブのみ・BSR 中央値から算出）
