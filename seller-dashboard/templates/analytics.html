@@ -199,10 +199,11 @@ function mkChart(id, data, withCum, opts) {
   const tickFont  = { size: 10 };
   const titleFont = { size: 10, weight: 'normal' };
   const scales = {
-    y:  { type: 'linear', position: 'left',
+    // 左軸は 0 始まり固定: マイナス領域は描画しない（負値は線がはみ出ない）
+    y:  { type: 'linear', position: 'left', min: 0, beginAtZero: true,
           ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
           grid: { color: 'rgba(0,0,0,0.06)' } },
-    y1: { type: 'linear', position: 'right',
+    y1: { type: 'linear', position: 'right', min: 0,
           ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 5, font: tickFont },
           grid: { drawOnChartArea: false },
           title: { display: true, text: '日次販売数', color: C.qty, font: titleFont } }
@@ -210,7 +211,7 @@ function mkChart(id, data, withCum, opts) {
   // 累計販売数 or 在庫数 のどちらかを描く時だけ y2 を出す
   if (withCumQty || withInventory) {
     scales.y2 = {
-      type: 'linear', position: 'right',
+      type: 'linear', position: 'right', min: 0,
       ticks: { color: C.inv, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
       grid: { drawOnChartArea: false },
       title: { display: true, text: '累計販売数 / 在庫数', color: C.inv, font: titleFont }
@@ -240,7 +241,7 @@ function mkChart(id, data, withCum, opts) {
       });
     }
     scales.yCum = {
-      type: 'linear', position: 'left',
+      type: 'linear', position: 'left', min: 0,
       ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
       grid: { drawOnChartArea: false }, offset: true,
       title: { display: true, text: '累計 売上/利益', color: C.salesCum, font: titleFont }
@@ -332,11 +333,9 @@ function mkChart(id, data, withCum, opts) {
               const bsr = data[i] && data[i].market_full_bsr;
               return `${lbl}: ${v}` + (bsr ? `（BSR中央値 ${bsr.toLocaleString()}位）` : '');
             }
-            // 在庫数 → 実測 / 推定 を併記
+            // 在庫数（実測のみ表示）
             if (lbl === '在庫数') {
-              const i = ctx.dataIndex;
-              const isActual = data[i] && data[i].inv_actual;
-              return `${lbl}: ${v} 個（${isActual ? '実測' : '推定'}）`;
+              return `${lbl}: ${v} 個`;
             }
             return /円/.test(lbl) ? `${lbl}: ${fmtYen(v)}` : `${lbl}: ${v}`;
           }

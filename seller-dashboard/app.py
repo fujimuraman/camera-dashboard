@@ -2023,12 +2023,8 @@ def create_app():
                 d["cum_prev"] = 0
 
         # ----- 累計販売数 + 在庫数の推移（日別） -----
-        # 在庫数は実測スナップショット (inventory_snapshots) があればそれを使う。
-        # 無い日は 現在の出品中商品数 + 期間内残りの累計販売数 から逆算（補充は無視）。
-        period_total_qty = sum(d["qty"] for d in daily)
-        inv_at_start = inventory_count_now + period_total_qty
-
-        # 実測スナップショット（date -> count）
+        # 在庫数は実測スナップショット (inventory_snapshots) のみ表示。
+        # スナップショットが無い日は描画しない（None で線が途切れる）。
         with get_db() as _conn_snap:
             try:
                 _snap_rows = _conn_snap.execute(
@@ -2039,31 +2035,20 @@ def create_app():
                 ).fetchall()
                 _snap_map = {r["snapshot_date"]: r["count_active"] for r in _snap_rows}
             except Exception:
-                # 初回起動時はテーブル無し → 推定のみ
+                # テーブル未生成（初回起動時）は空 dict
                 _snap_map = {}
 
         _running_q = 0
-        _today_iso = datetime.now().date().isoformat()
         for d in daily:
             _running_q += d["qty"]
             d["cum_qty"] = _running_q
-            # 日付キーを daily から復元（k は "1日"等の表示用なのでカレンダー日付を別途算出）
-        # daily は chart_daily_start から1日ずつ増えるので index で逆引き
+
         for i, d in enumerate(daily):
-            day_dt = chart_daily_start + timedelta(days=i)
-            day_iso = day_dt.isoformat()
-            # 1) 実測スナップショットがあればそれを最優先
+            day_iso = (chart_daily_start + timedelta(days=i)).isoformat()
             if day_iso in _snap_map:
                 d["inv_est"] = _snap_map[day_iso]
-                d["inv_actual"] = True
-            elif day_iso > _today_iso:
-                # 2) 未来日: 在庫推移の表示は止める（None）
-                d["inv_est"] = None
-                d["inv_actual"] = False
             else:
-                # 3) 過去日でスナップなし: 推定（現在在庫 + 期間後累計販売数）から逆算
-                d["inv_est"] = inv_at_start - d["cum_qty"]
-                d["inv_actual"] = False
+                d["inv_est"] = None  # 実測値が無い日は描画しない
 
         # 月別
         # 要件: preset=year はその年の1〜12月を全て横軸表示（データなし月は0）
@@ -2092,9 +2077,8 @@ def create_app():
             m["cum_prev"] = _prev_cum_m
 
         # ----- 累計販売数 + 在庫数の推移（月別） -----
-        period_total_qty_m = sum(m["qty"] for m in monthly)
-        inv_at_start_m = inventory_count_now + period_total_qty_m
-        # 月末日のスナップショット map（YYYY-MM -> count）
+        # 在庫数は各月の最終スナップショット（月末値の代用）のみ表示。
+        # スナップショットが無い月は描画しない。
         _ym_snap_map = {}
         try:
             with get_db() as _conn_snap_m:
@@ -2104,7 +2088,6 @@ def create_app():
                            snapshot_date
                     FROM inventory_snapshots
                 """).fetchall()
-            # 各月で最も新しい日のスナップショット = 月末値の代用
             for r in _snap_rows_m:
                 ym = r["ym"]
                 cur_best = _ym_snap_map.get(ym)
@@ -2114,20 +2097,14 @@ def create_app():
             _ym_snap_map = {}
 
         _running_qm = 0
-        _today_ym = datetime.now().strftime("%Y-%m")
         for m in monthly:
             _running_qm += m["qty"]
             m["cum_qty"] = _running_qm
             ym_key = m["k"]
             if ym_key in _ym_snap_map:
                 m["inv_est"] = _ym_snap_map[ym_key][0]
-                m["inv_actual"] = True
-            elif ym_key > _today_ym:
-                m["inv_est"] = None
-                m["inv_actual"] = False
             else:
-                m["inv_est"] = inv_at_start_m - _running_qm
-                m["inv_actual"] = False
+                m["inv_est"] = None  # 実測値が無い月は描画しない
 
         # ----- 市場活況度スコア（BSR 履歴から月別中央値）-----
         # 各 ASIN の BSR 履歴を月別に集約 → 中央値を算出 → 全在庫で月別中央値
