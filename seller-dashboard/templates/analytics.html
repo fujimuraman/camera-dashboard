@@ -251,10 +251,14 @@ function mkChart(id, data, withCum, opts) {
       title: { display: true, text: '累計売上', color: C.salesCum, font: titleFont }
     };
     // 累計利益は単独スケール（表示しない hidden 軸）。
-    // 累計売上 と桁が違うため同軸だと変動が見えなくなるので、
-    // 利益独自の min/max で auto-fit させて変動を強調する。
+    // 累計売上 と桁が違うため同軸だと変動が見えなくなるので別軸にする。
+    // ただし auto スケールだと利益が画面いっぱいに広がり「売上より上」に
+    // 来てしまい違和感があるため、max を 利益の3倍 に固定して画面下 1/3
+    // 程度に抑える。
+    const profitMax = Math.max(0, ...data.map(d => d.cum_profit || 0));
     scales.yProfitCum = {
       type: 'linear', position: 'left', min: 0,
+      max: profitMax > 0 ? profitMax * 3 : undefined,
       display: false,  // 軸目盛・タイトルは出さない
     };
     // 累計あり時は左軸に「日次/月次売上」を表示してもよいが、
