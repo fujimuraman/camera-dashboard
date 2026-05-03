@@ -1003,11 +1003,14 @@ def create_app():
                                   - b["promo"] - refund_deduction)
                 cum_sales  += b["sales"]
                 cum_profit += day_profit
+                # 累計利益は実データがある日（売上 or 販売数 > 0）のみ表示
+                has_data = b["sales"] > 0 or b["qty"] > 0
                 this_month.append({
                     "day": day_iso, "d": d,
                     "sales": b["sales"], "qty": b["qty"],
                     "profit": round(day_profit),
-                    "cum": cum_sales, "cum_profit": round(cum_profit),
+                    "cum": cum_sales,
+                    "cum_profit": round(cum_profit) if has_data else None,
                 })
 
             # ---- 前月の日別累計売上（モチベ比較用、当月チャートに重ねる）----
@@ -2034,10 +2037,13 @@ def create_app():
                 prof = _profit_of(b, per_day_exp)
             cum_s += b["sales"]
             cum_p += prof
+            # 累計利益は実データがある日（売上 or 販売数 > 0）のみ値を入れる
+            has_data_day = b["sales"] > 0 or b["qty"] > 0
             daily.append({
                 "k": f"{cur.day}日",
                 "sales": b["sales"], "qty": b["qty"],
-                "profit": round(prof), "cum": cum_s, "cum_profit": round(cum_p),
+                "profit": round(prof), "cum": cum_s,
+                "cum_profit": round(cum_p) if has_data_day else None,
             })
             cur += timedelta(days=1)
 
