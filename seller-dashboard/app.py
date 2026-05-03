@@ -987,15 +987,20 @@ def create_app():
             this_month = []
             cum_sales = 0
             cum_profit = 0
+            today_iso_dash = datetime.now().date().isoformat()
             for d in range(1, days_in_month + 1):
                 day_iso = first.replace(day=d).strftime("%Y-%m-%d")
                 b = by_day_agg.get(day_iso, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
                 refund_deduction = b["refund"] if rm == "subtract_refund" else 0
-                # 売上分析と同じ式に揃える: + 送料、− プロモ
-                day_profit = (b["sales"] + b["ship_in"]
-                              - b["cost"] - b["fee"]
-                              - ship_per_val * b["qty"] - per_day_fixed
-                              - b["promo"] - refund_deduction)
+                if day_iso > today_iso_dash:
+                    # 未来日: 固定費按分も per_item も引かない → 累計利益が水平延長
+                    day_profit = 0
+                else:
+                    # 売上分析と同じ式に揃える: + 送料、− プロモ
+                    day_profit = (b["sales"] + b["ship_in"]
+                                  - b["cost"] - b["fee"]
+                                  - ship_per_val * b["qty"] - per_day_fixed
+                                  - b["promo"] - refund_deduction)
                 cum_sales  += b["sales"]
                 cum_profit += day_profit
                 this_month.append({
