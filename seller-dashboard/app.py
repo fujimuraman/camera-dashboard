@@ -977,12 +977,10 @@ def create_app():
                 "WHERE year_month=? AND category NOT IN ('Amazon利用料','プラス計上')",
                 (ym,),
             ).fetchone()[0] or 0
-            ship_row = conn.execute(
-                "SELECT per_item_fee, base_fee FROM shipping_agent_fees ORDER BY effective_from DESC LIMIT 1"
-            ).fetchone()
-            ship_base_val = ((ship_row["base_fee"] if ship_row else 0) or 0)
-            ship_per_val  = ((ship_row["per_item_fee"] if ship_row else 0) or 0)
-            per_day_fixed = (ship_base_val + other) / days_in_month
+            # KPI で算出済みの ship_total（base + per_item × ASIN登録数）を使用。
+            # 累計利益が KPI 利益と一致するよう、per_item は qty 掛けではなく
+            # ASIN 登録ベースの ship_total を日割り按分する。
+            per_day_fixed = (ship_total + other) / days_in_month
 
             this_month = []
             cum_sales = 0
@@ -993,13 +991,14 @@ def create_app():
                 b = by_day_agg.get(day_iso, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
                 refund_deduction = b["refund"] if rm == "subtract_refund" else 0
                 if day_iso > today_iso_dash:
-                    # 未来日: 固定費按分も per_item も引かない → 累計利益が水平延長
+                    # 未来日: 固定費按分も引かない → 累計利益が水平延長
                     day_profit = 0
                 else:
-                    # 売上分析と同じ式に揃える: + 送料、− プロモ
+                    # 売上分析と同じ式: + 送料、− プロモ。
+                    # 発送代行は ship_total を per_day_fixed で日割り（per_item × qty は撤廃）。
                     day_profit = (b["sales"] + b["ship_in"]
                                   - b["cost"] - b["fee"]
-                                  - ship_per_val * b["qty"] - per_day_fixed
+                                  - per_day_fixed
                                   - b["promo"] - refund_deduction)
                 cum_sales  += b["sales"]
                 cum_profit += day_profit
