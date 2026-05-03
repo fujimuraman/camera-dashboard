@@ -210,6 +210,15 @@ CREATE TABLE IF NOT EXISTS market_score_cache (
   asin_count INTEGER,
   updated_at TEXT
 );
+
+-- 在庫数の日次スナップショット（売上分析の在庫数推移を「実測」で表示するため）
+-- snapshot_date = "YYYY-MM-DD"、count_active = Active && qty>0 の SKU 数、value = 仕入価格 × 数量の合計
+CREATE TABLE IF NOT EXISTS inventory_snapshots (
+  snapshot_date TEXT PRIMARY KEY,
+  count_active INTEGER NOT NULL,
+  inventory_value INTEGER,
+  recorded_at TEXT
+);
 """
 
 

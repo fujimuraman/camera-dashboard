@@ -188,17 +188,29 @@ window.PREV_LABEL = {{ prev_label|tojson }};
 function mkChart(id, data, withCum, opts) {
   opts = opts || {};
   const withProfitBar = !!opts.withProfitBar;     // 月別だけ利益棒も追加
-  const withInventory = !!opts.withInventory;     // 月別/日別: 在庫数の推定推移を線で
+  const withInventory = !!opts.withInventory;     // 月別/日別: 在庫数の推移を線で
+  const withCumQty    = !!opts.withCumQty;        // 月別/日別: 累計販売数の線
   // 凡例順を ダッシュボード と統一: 累計売上 → 累計利益 → 前期間累計売上 → 日次売上 → 販売数
   const datasets = [];
+  // y1=日次販売数（個）、y2=累計販売数+在庫数（個、線のみ）。スケール分離で棒が圧縮されない。
   const scales = {
     y:  { type: 'linear', position: 'left',
           ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 6 },
           grid: { color: 'rgba(0,0,0,0.06)' } },
     y1: { type: 'linear', position: 'right',
           ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 6 },
-          grid: { drawOnChartArea: false } }
+          grid: { drawOnChartArea: false },
+          title: { display: true, text: '日次販売数', color: C.qty } }
   };
+  // 累計販売数 or 在庫数 のどちらかを描く時だけ y2 を出す
+  if (withCumQty || withInventory) {
+    scales.y2 = {
+      type: 'linear', position: 'right',
+      ticks: { color: '#0ea5e9', callback: fmtShort, maxTicksLimit: 6 },
+      grid: { drawOnChartArea: false },
+      title: { display: true, text: '累計販売数 / 在庫数', color: '#0ea5e9' }
+    };
+  }
   // ※ Chart.js は dataset.order の昇順で凡例を並べるため、表示順に番号を振る
   // 凡例順: 累計売上(1) / 累計利益(2) / 前同期間累計売上(3) / 日次売上(4) / 利益(5) / 販売数(6) / 在庫数(7)
   if (withCum) {
@@ -245,14 +257,26 @@ function mkChart(id, data, withCum, opts) {
     type: 'bar', label: '販売数', data: data.map(d => d.qty),
     backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 6
   });
-  if (withInventory) {
-    // 在庫数の推定推移（現在在庫から逆算、補充は無視）
+  if (withCumQty) {
+    // 累計販売数（y2、青系の塗りつぶし線）
     datasets.push({
-      type: 'line', label: '在庫数（推定）',
-      data: data.map(d => (d.inv_est === undefined ? null : d.inv_est)),
+      type: 'line', label: '累計販売数',
+      data: data.map(d => (d.cum_qty === undefined ? null : d.cum_qty)),
+      borderColor: '#1d4ed8',
+      backgroundColor: 'rgba(29,78,216,0.12)',
+      pointRadius: 2, tension: 0.2, yAxisID: 'y2', order: 7,
+      fill: true, spanGaps: true,
+    });
+  }
+  if (withInventory) {
+    // 在庫数（実測スナップショット優先、無い日は推定）。y2 上に点線で。
+    // tooltip で「実測 / 推定」を区別表示する（inv_actual フラグから）
+    datasets.push({
+      type: 'line', label: '在庫数',
+      data: data.map(d => (d.inv_est === undefined || d.inv_est === null ? null : d.inv_est)),
       borderColor: '#0ea5e9',
       backgroundColor: '#0ea5e9',
-      pointRadius: 2, tension: 0.2, yAxisID: 'y1', order: 7,
+      pointRadius: 2, tension: 0.2, yAxisID: 'y2', order: 8,
       borderDash: [4, 3], spanGaps: true,
     });
   }
@@ -303,6 +327,12 @@ function mkChart(id, data, withCum, opts) {
               const bsr = data[i] && data[i].market_full_bsr;
               return `${lbl}: ${v}` + (bsr ? `（BSR中央値 ${bsr.toLocaleString()}位）` : '');
             }
+            // 在庫数 → 実測 / 推定 を併記
+            if (lbl === '在庫数') {
+              const i = ctx.dataIndex;
+              const isActual = data[i] && data[i].inv_actual;
+              return `${lbl}: ${v} 個（${isActual ? '実測' : '推定'}）`;
+            }
             return /円/.test(lbl) ? `${lbl}: ${fmtYen(v)}` : `${lbl}: ${v}`;
           }
         }}
@@ -311,8 +341,8 @@ function mkChart(id, data, withCum, opts) {
     }
   });
 }
-mkChart('chMonthly', {{ monthly|tojson }}, false, { withProfitBar: true, withInventory: true });
-mkChart('chDaily',   {{ daily|tojson }},   true,  { withInventory: true });
+mkChart('chMonthly', {{ monthly|tojson }}, false, { withProfitBar: true, withInventory: true, withCumQty: true });
+mkChart('chDaily',   {{ daily|tojson }},   true,  { withInventory: true, withCumQty: true });
 mkChart('chDow',     {{ dow|tojson }},     false);
 mkChart('chHour',    {{ hour|tojson }},    false);
 

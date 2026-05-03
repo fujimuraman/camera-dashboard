@@ -588,6 +588,37 @@ def _start_scheduler(app):
             except Exception as e:
                 app.logger.error(f"market_bsr error: {e}")
 
+    def record_inventory_snapshot():
+        """在庫数の日次スナップショットを記録。1日1回 INSERT OR REPLACE。
+        - count_active: Active && qty>0 の SKU 数
+        - inventory_value: 仕入価格 × 数量 の合計
+        ※ 同日中に複数回実行されても上書きで安全。
+        """
+        with app.app_context():
+            try:
+                from datetime import datetime as _dt3
+                today_iso = _dt3.now().date().isoformat()
+                with get_db() as conn:
+                    row = conn.execute("""
+                        SELECT COUNT(*) AS c,
+                               COALESCE(SUM(IFNULL(cp.cost_price,0) * inv.quantity), 0) AS v
+                        FROM inventory inv
+                        LEFT JOIN cost_prices cp ON cp.seller_sku = inv.seller_sku
+                        WHERE inv.status LIKE 'Active%' AND inv.quantity > 0
+                    """).fetchone()
+                    conn.execute("""
+                        INSERT OR REPLACE INTO inventory_snapshots
+                        (snapshot_date, count_active, inventory_value, recorded_at)
+                        VALUES (?, ?, ?, ?)
+                    """, (today_iso, int(row["c"]), int(row["v"] or 0),
+                          _dt3.now().isoformat(timespec="seconds")))
+                app.logger.info(
+                    f"inventory_snapshot recorded: date={today_iso} "
+                    f"count={row['c']} value={row['v']}"
+                )
+            except Exception as e:
+                app.logger.error(f"inventory_snapshot error: {e}")
+
     def reschedule_market_bsr_job():
         """市場BSR取得を 14.4分間隔（=1日100件取得 → 1573件で約16日1周）でスケジュール。
         自社仕入れ対象リスト連動版: 取得対象は market_bsr_meta 全件（範囲切替なし）。"""
@@ -620,6 +651,13 @@ def _start_scheduler(app):
     # polling_log クリーンアップ: 1日1回実行（起動5分後に1回目）
     scheduler.add_job(cleanup_job, "interval", days=1, id="cleanup_polling_log",
                       replace_existing=True, next_run_time=_dt.now() + _td(minutes=5))
+
+    # 在庫数スナップショット: 1日1回（起動2分後 + 1日間隔）
+    # 売上分析の在庫数推移を「実測値」で表示するため
+    scheduler.add_job(record_inventory_snapshot, "interval", days=1,
+                      id="inventory_snapshot",
+                      replace_existing=True,
+                      next_run_time=_dt.now() + _td(minutes=2))
     # 市場BSR取得（設定に従って初期登録）
     reschedule_market_bsr_job()
     # 設定保存後に呼び出せるようにアプリ属性として公開
@@ -1984,17 +2022,48 @@ def create_app():
             else:
                 d["cum_prev"] = 0
 
-        # ----- 在庫数の推定推移（日別） -----
-        # 現在の出品中商品数（=「現在の在庫数」）と期間内累計販売数から逆算。
-        # 補充は無視する（あれば実値より過小推定）。
-        # 期間開始時点の在庫数 = 現在在庫 + 期間内累計販売数
-        # 各日末: 期間開始在庫 - 累計販売数（その日まで含む）
+        # ----- 累計販売数 + 在庫数の推移（日別） -----
+        # 在庫数は実測スナップショット (inventory_snapshots) があればそれを使う。
+        # 無い日は 現在の出品中商品数 + 期間内残りの累計販売数 から逆算（補充は無視）。
         period_total_qty = sum(d["qty"] for d in daily)
         inv_at_start = inventory_count_now + period_total_qty
+
+        # 実測スナップショット（date -> count）
+        with get_db() as _conn_snap:
+            try:
+                _snap_rows = _conn_snap.execute(
+                    "SELECT snapshot_date, count_active "
+                    "FROM inventory_snapshots "
+                    "WHERE snapshot_date BETWEEN ? AND ?",
+                    (chart_daily_start.isoformat(), chart_daily_end.isoformat())
+                ).fetchall()
+                _snap_map = {r["snapshot_date"]: r["count_active"] for r in _snap_rows}
+            except Exception:
+                # 初回起動時はテーブル無し → 推定のみ
+                _snap_map = {}
+
         _running_q = 0
+        _today_iso = datetime.now().date().isoformat()
         for d in daily:
             _running_q += d["qty"]
-            d["inv_est"] = inv_at_start - _running_q
+            d["cum_qty"] = _running_q
+            # 日付キーを daily から復元（k は "1日"等の表示用なのでカレンダー日付を別途算出）
+        # daily は chart_daily_start から1日ずつ増えるので index で逆引き
+        for i, d in enumerate(daily):
+            day_dt = chart_daily_start + timedelta(days=i)
+            day_iso = day_dt.isoformat()
+            # 1) 実測スナップショットがあればそれを最優先
+            if day_iso in _snap_map:
+                d["inv_est"] = _snap_map[day_iso]
+                d["inv_actual"] = True
+            elif day_iso > _today_iso:
+                # 2) 未来日: 在庫推移の表示は止める（None）
+                d["inv_est"] = None
+                d["inv_actual"] = False
+            else:
+                # 3) 過去日でスナップなし: 推定（現在在庫 + 期間後累計販売数）から逆算
+                d["inv_est"] = inv_at_start - d["cum_qty"]
+                d["inv_actual"] = False
 
         # 月別
         # 要件: preset=year はその年の1〜12月を全て横軸表示（データなし月は0）
@@ -2022,14 +2091,43 @@ def create_app():
                 _prev_cum_m += prev_by_month.get(prev_ym_sorted[i], 0)
             m["cum_prev"] = _prev_cum_m
 
-        # ----- 在庫数の推定推移（月別） -----
-        # 各月末時点の推定在庫数 = 現在在庫 + (該当月以降に売れた累計販売数)
+        # ----- 累計販売数 + 在庫数の推移（月別） -----
         period_total_qty_m = sum(m["qty"] for m in monthly)
         inv_at_start_m = inventory_count_now + period_total_qty_m
+        # 月末日のスナップショット map（YYYY-MM -> count）
+        _ym_snap_map = {}
+        try:
+            with get_db() as _conn_snap_m:
+                _snap_rows_m = _conn_snap_m.execute("""
+                    SELECT substr(snapshot_date,1,7) AS ym,
+                           count_active,
+                           snapshot_date
+                    FROM inventory_snapshots
+                """).fetchall()
+            # 各月で最も新しい日のスナップショット = 月末値の代用
+            for r in _snap_rows_m:
+                ym = r["ym"]
+                cur_best = _ym_snap_map.get(ym)
+                if cur_best is None or r["snapshot_date"] > cur_best[1]:
+                    _ym_snap_map[ym] = (r["count_active"], r["snapshot_date"])
+        except Exception:
+            _ym_snap_map = {}
+
         _running_qm = 0
+        _today_ym = datetime.now().strftime("%Y-%m")
         for m in monthly:
             _running_qm += m["qty"]
-            m["inv_est"] = inv_at_start_m - _running_qm
+            m["cum_qty"] = _running_qm
+            ym_key = m["k"]
+            if ym_key in _ym_snap_map:
+                m["inv_est"] = _ym_snap_map[ym_key][0]
+                m["inv_actual"] = True
+            elif ym_key > _today_ym:
+                m["inv_est"] = None
+                m["inv_actual"] = False
+            else:
+                m["inv_est"] = inv_at_start_m - _running_qm
+                m["inv_actual"] = False
 
         # ----- 市場活況度スコア（BSR 履歴から月別中央値）-----
         # 各 ASIN の BSR 履歴を月別に集約 → 中央値を算出 → 全在庫で月別中央値
