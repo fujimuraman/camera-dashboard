@@ -2119,6 +2119,7 @@ def create_app():
         monthly = []
         # other_exp は月数で均等割り（preset=year で 12月分）
         other_exp_per_month = other_exp / max(1, len(ym_set))
+        cum_profit_running_m = 0
         for k in month_keys:
             b = by_month.get(k, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
             # その月の ship_total（base + per_item × その月のASIN登録数）+ その月の other_exp
@@ -2126,7 +2127,16 @@ def create_app():
             m_ship = ship_total_by_ym.get(k, 0)
             per_month_exp = m_ship + other_exp_per_month
             prof = _profit_of(b, per_month_exp)
-            monthly.append({"k": k, "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
+            # 累計利益: 実測値（売上または販売数があった月）のみ表示。
+            # データの無い月は null（グラフ上で線を切る）。値そのものは累積していく。
+            has_data = b["sales"] > 0 or b["qty"] > 0
+            cum_profit_running_m += prof
+            cum_profit_val = round(cum_profit_running_m) if has_data else None
+            monthly.append({
+                "k": k, "sales": b["sales"], "qty": b["qty"],
+                "profit": round(prof),
+                "cum_profit": cum_profit_val,
+            })
         # 月別: 前期間（年なら前年）の月別売上を同じ月数で並べる
         if preset == "year":
             prev_ym_sorted = [f"{_sd.year - 1}-{m:02d}" for m in range(1, 13)]
