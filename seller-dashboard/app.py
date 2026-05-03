@@ -1003,13 +1003,14 @@ def create_app():
                                   - b["promo"] - refund_deduction)
                 cum_sales  += b["sales"]
                 cum_profit += day_profit
-                # 累計利益は実データがある日（売上 or 販売数 > 0）のみ表示
+                # 累計売上・累計利益は実データがある日（売上 or 販売数 > 0）のみ表示。
+                # 未来日およびデータ無い日は null（プロット飛ばし。点同士は線で結ぶ）。
                 has_data = b["sales"] > 0 or b["qty"] > 0
                 this_month.append({
                     "day": day_iso, "d": d,
                     "sales": b["sales"], "qty": b["qty"],
                     "profit": round(day_profit),
-                    "cum": cum_sales,
+                    "cum": cum_sales if has_data else None,
                     "cum_profit": round(cum_profit) if has_data else None,
                 })
 
@@ -2037,12 +2038,14 @@ def create_app():
                 prof = _profit_of(b, per_day_exp)
             cum_s += b["sales"]
             cum_p += prof
-            # 累計利益は実データがある日（売上 or 販売数 > 0）のみ値を入れる
+            # 累計売上・累計利益は実データがある日（売上 or 販売数 > 0）のみ値を入れる。
+            # 未来日やデータ無い日は null（点同士は spanGaps:true で線結合）。
             has_data_day = b["sales"] > 0 or b["qty"] > 0
             daily.append({
                 "k": f"{cur.day}日",
                 "sales": b["sales"], "qty": b["qty"],
-                "profit": round(prof), "cum": cum_s,
+                "profit": round(prof),
+                "cum": cum_s if has_data_day else None,
                 "cum_profit": round(cum_p) if has_data_day else None,
             })
             cur += timedelta(days=1)
@@ -2106,7 +2109,9 @@ def create_app():
         _running_q = 0
         for d in daily:
             _running_q += d["qty"]
-            d["cum_qty"] = _running_q
+            # 累計販売数も実データがある日のみ表示（同じ has_data_day 判定）
+            _has_data = d["sales"] > 0 or d["qty"] > 0
+            d["cum_qty"] = _running_q if _has_data else None
 
         for i, d in enumerate(daily):
             day_iso = (chart_daily_start + timedelta(days=i)).isoformat()
@@ -2178,8 +2183,13 @@ def create_app():
         _running_qm = 0
         for m in monthly:
             _running_qm += m["qty"]
-            m["cum_qty"] = _running_qm
             ym_key = m["k"]
+            # 実データがある月のみ販売数バー・累計販売数を表示
+            # 未来月や売上ゼロ月は null（プロット飛ばし、点同士は spanGaps:true で結合）
+            _has_data_m = (m["sales"] or 0) > 0 or (m["qty"] or 0) > 0
+            m["cum_qty"] = _running_qm if _has_data_m else None
+            if not _has_data_m:
+                m["qty"] = None  # 販売数の棒も描画しない
             if ym_key in _ym_snap_map:
                 m["inv_est"] = _ym_snap_map[ym_key][0]
             else:

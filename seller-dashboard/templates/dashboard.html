@@ -169,9 +169,11 @@ new Chart(document.getElementById('monthChart'), {
     // 凡例順: 累計売上 / 累計利益 / 前月累計売上 / 日次売上 / 販売数
     // ※ Chart.js は dataset.order の昇順で凡例も並べるため、表示したい順に番号を振る
     datasets: [
-      { type: 'line', label: '累計売上 (円)', data: cumSales,
+      { type: 'line', label: '累計売上 (円)',
+        data: cumSales.map(v => (v === undefined || v === null ? null : v)),
         borderColor: C.salesCum, backgroundColor: C.salesCum,
-        pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1 },
+        pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1,
+        spanGaps: true },  // データのある日同士を線で結ぶ（実データのみ表示）
       { type: 'line', label: '累計利益 (円・別スケール)',
         data: cumProfit.map(v => (v === undefined || v === null ? null : v)),
         borderColor: C.profitCum, backgroundColor: C.profitCum,

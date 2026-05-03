@@ -237,9 +237,11 @@ function mkChart(id, data, withCum, opts) {
   // 凡例順: 累計売上(1) / 累計利益(2) / 前同期間累計売上(3) / 日次売上(4) / 利益(5) / 販売数(6) / 在庫数(7)
   if (withCum) {
     datasets.push({
-      type: 'line', label: '累計売上 (円)', data: data.map(d => d.cum),
+      type: 'line', label: '累計売上 (円)',
+      data: data.map(d => (d.cum === undefined || d.cum === null ? null : d.cum)),
       borderColor: C.salesCum, backgroundColor: C.salesCum,
-      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1
+      pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1,
+      spanGaps: true,  // データのある日同士を線で結ぶ
     });
     datasets.push({
       type: 'line', label: '累計利益 (円・別スケール)',
