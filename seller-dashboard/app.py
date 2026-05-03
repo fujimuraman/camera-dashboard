@@ -977,19 +977,11 @@ def create_app():
                 "WHERE year_month=? AND category NOT IN ('Amazon利用料','プラス計上')",
                 (ym,),
             ).fetchone()[0] or 0
-            # KPI で算出済みの ship_total（base + per_item × ASIN登録数）を使用。
-            # 累計利益が KPI 利益と一致するよう、固定費（ship_total + other）を
-            # 「実績がある日数」で割って日割り按分する。
-            #   preset=this（当月）: 月初〜今日までの日数（例: 5/3 なら3日）
-            #   preset=prev（前月）: 月初〜月末日までの全日（=days_in_month）
-            # full days_in_month で割ると未来側を含めるため、KPI が full 固定費を
-            # 引いているのに対し累計利益は経過分しか引けず KPI と乖離する。
-            today_for_fixed = datetime.now().date()
-            days_passed_in_target = max(1, min(
-                (today_for_fixed - first.date()).days + 1,
-                days_in_month
-            ))
-            per_day_fixed = (ship_total + other) / days_passed_in_target
+            # 固定費（ship_total + other）を月の総日数で日割り按分。
+            # 累計利益は「その日までに実際に発生した固定費」だけを引く（実測値）ため、
+            # 月途中では KPI 利益（full ship_total を引く想定）と一致しない。
+            # 月末日まで進めば自然に一致する。
+            per_day_fixed = (ship_total + other) / days_in_month
 
             this_month = []
             cum_sales = 0
