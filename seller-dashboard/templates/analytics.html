@@ -199,12 +199,14 @@ function mkChart(id, data, withCum, opts) {
   // 軸幅圧縮: ticks フォントを 10px、maxTicksLimit を 5 に、title フォントも小さめ
   const tickFont  = { size: 10 };
   const titleFont = { size: 10, weight: 'normal' };
+  // 月別タブ（withProfitBar）は売上棒+利益棒なので軸タイトルを「売上/利益」に
+  const yAxisTitle = withProfitBar ? '売上/利益' : '売上';
   const scales = {
     // 左軸は 0 始まり固定: マイナス領域は描画しない（負値は線がはみ出ない）
     y:  { type: 'linear', position: 'left', min: 0, beginAtZero: true,
           ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
           grid: { color: 'rgba(0,0,0,0.06)' },
-          title: { display: true, text: '売上', color: C.sales, font: titleFont } },
+          title: { display: true, text: yAxisTitle, color: C.sales, font: titleFont } },
     y1: { type: 'linear', position: 'right', min: 0,
           ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 5, font: tickFont },
           grid: { drawOnChartArea: false },
