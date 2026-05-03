@@ -246,7 +246,7 @@ function mkChart(id, data, withCum, opts) {
       data: data.map(d => (d.cum_profit === undefined || d.cum_profit === null ? null : d.cum_profit)),
       borderColor: C.profitCum, backgroundColor: C.profitCum,
       pointRadius: 2, tension: 0.2, yAxisID: 'yProfitCum', order: 2,
-      spanGaps: false,  // null は線を切る（データ無し月は描画しない）
+      spanGaps: true,  // データのある日同士を線で結ぶ
     });
     if (data.length && data[0].cum_prev !== undefined) {
       datasets.push({
@@ -293,7 +293,7 @@ function mkChart(id, data, withCum, opts) {
       data: data.map(d => (d.cum_profit === undefined || d.cum_profit === null ? null : d.cum_profit)),
       borderColor: C.profitCum, backgroundColor: C.profitCum,
       pointRadius: 2, tension: 0.2, yAxisID: 'yProfitCum', order: 2,
-      spanGaps: false,  // データ無し月は線を切る（実測値のみ）
+      spanGaps: true,  // データのある月同士を線で結ぶ（データ無し月は飛ばす）
     });
   }
   if (withCumQty) {

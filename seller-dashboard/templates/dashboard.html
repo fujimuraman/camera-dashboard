@@ -176,7 +176,7 @@ new Chart(document.getElementById('monthChart'), {
         data: cumProfit.map(v => (v === undefined || v === null ? null : v)),
         borderColor: C.profitCum, backgroundColor: C.profitCum,
         pointRadius: 2, tension: 0.2, yAxisID: 'yProfitCum', order: 2,
-        spanGaps: false },  // データ無い日は線を切る（実測値のみ表示）
+        spanGaps: true },  // データのある日同士を線で結ぶ（無い日はドット飛ばす）
       { type: 'line', label: '前月 累計売上 (' + prevYmLabel + ')',
         data: prevCumSales,
         borderColor: 'rgba(120, 120, 120, 0.7)',
