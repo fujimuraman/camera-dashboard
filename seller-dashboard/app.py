@@ -772,7 +772,17 @@ def create_app():
     @app.route("/")
     @login_required
     def dashboard():
-        today = datetime.now().date().isoformat()
+        # preset: this(当月、デフォルト) / prev(前月)
+        preset = request.args.get("preset", "this")
+        if preset not in ("this", "prev"):
+            preset = "this"
+        _now_real = datetime.now()
+        if preset == "prev":
+            # 前月: 当月1日 - 1日 で前月末日を target にする
+            target_dt = _now_real.replace(day=1) - timedelta(days=1)
+        else:
+            target_dt = _now_real
+        today = target_dt.date().isoformat()  # 集計対象月の日付（既存ロジックは substr(today,1,7) で月切り出し）
         with get_db() as conn:
             # 今月の売上・販売数・仕入・利益（プライスター方式 / 売上分析と同じ式）
             # Pending用に inventory.listing_price も取得（item_price が NULL/0 のときの推定価格）
@@ -824,7 +834,7 @@ def create_app():
                 else:
                     rate = estimate_amazon_fee_rate(r["title"] or "", None)
                     amz_fee += round(p * rate) * q
-            ym = datetime.now().strftime("%Y-%m")
+            ym = target_dt.strftime("%Y-%m")
             # 売上分析と同じ式に揃える:
             # - other:   Amazon利用料・プラス計上を除く経費
             # - amz_fee_from_expense: Amazon利用料（FBA保管料・サブスク等の月次経費）
@@ -872,8 +882,8 @@ def create_app():
                 "SELECT COUNT(*) AS c FROM returns WHERE return_date > date('now', '-30 days')"
             ).fetchone()["c"]
 
-            # 当月の日別売上＋利益（全日付で 0 埋め、累計線用）
-            now = datetime.now()
+            # 対象月の日別売上＋利益（全日付で 0 埋め、累計線用）
+            now = target_dt
             first = now.replace(day=1)
             if now.month == 12:
                 next_first = now.replace(year=now.year + 1, month=1, day=1)
@@ -1010,7 +1020,9 @@ def create_app():
             this_month=this_month,
             prev_month=prev_month,
             prev_ym_label=prev_first.strftime("%Y年%m月").replace("年0", "年"),
-            year_month=datetime.now().strftime("%Y年%-m月") if os.name != 'nt' else datetime.now().strftime("%Y年%m月").replace("年0", "年"),
+            # 表示中の対象月（preset で当月/前月切替）
+            year_month=target_dt.strftime("%Y年%-m月") if os.name != 'nt' else target_dt.strftime("%Y年%m月").replace("年0", "年"),
+            preset=preset,
         )
 
     # ==========================================================
@@ -1857,11 +1869,17 @@ def create_app():
         profit = (sales_total + shipping_income
                   - cost_total - amz_fee_total - other_exp_total
                   - promotion_total - refund_deduction)
+        # 現在の出品中商品数（Active かつ qty > 0）
+        inventory_count_now = conn.execute("""
+            SELECT COUNT(*) AS c FROM inventory
+            WHERE status LIKE 'Active%' AND quantity > 0
+        """).fetchone()["c"]
         kpi = {
             "qty_total": qty_total,
             "sales_total": sales_total,
             "shipping_income": shipping_income,
             "inventory_value": inventory_value,
+            "inventory_count": inventory_count_now,  # 現在の出品中商品数
             "cost_total": cost_total,
             "amazon_fee_total": amz_fee_total,
             "other_expense": other_exp_total,
@@ -1869,6 +1887,8 @@ def create_app():
             "avg_qty_per_day": round(qty_total / days_in_period, 2),
             "avg_price_per_unit": round(sales_total / qty_total, 2) if qty_total else 0,
             "avg_cost_per_unit": round(cost_total / qty_total, 2) if qty_total else 0,
+            # 利益単価 = 期間内利益 ÷ 期間内販売数
+            "avg_profit_per_unit": round(profit / qty_total, 2) if qty_total else 0,
             "refund_amount": refund_amount,
             "refund_count": refund_count,
             "promotion_total": promotion_total,
@@ -1961,6 +1981,18 @@ def create_app():
             else:
                 d["cum_prev"] = 0
 
+        # ----- 在庫数の推定推移（日別） -----
+        # 現在の出品中商品数（=「現在の在庫数」）と期間内累計販売数から逆算。
+        # 補充は無視する（あれば実値より過小推定）。
+        # 期間開始時点の在庫数 = 現在在庫 + 期間内累計販売数
+        # 各日末: 期間開始在庫 - 累計販売数（その日まで含む）
+        period_total_qty = sum(d["qty"] for d in daily)
+        inv_at_start = inventory_count_now + period_total_qty
+        _running_q = 0
+        for d in daily:
+            _running_q += d["qty"]
+            d["inv_est"] = inv_at_start - _running_q
+
         # 月別
         # 要件: preset=year はその年の1〜12月を全て横軸表示（データなし月は0）
         # それ以外（this/prev/custom）はデータがある月のみ
@@ -1986,6 +2018,15 @@ def create_app():
             if i < len(prev_ym_sorted):
                 _prev_cum_m += prev_by_month.get(prev_ym_sorted[i], 0)
             m["cum_prev"] = _prev_cum_m
+
+        # ----- 在庫数の推定推移（月別） -----
+        # 各月末時点の推定在庫数 = 現在在庫 + (該当月以降に売れた累計販売数)
+        period_total_qty_m = sum(m["qty"] for m in monthly)
+        inv_at_start_m = inventory_count_now + period_total_qty_m
+        _running_qm = 0
+        for m in monthly:
+            _running_qm += m["qty"]
+            m["inv_est"] = inv_at_start_m - _running_qm
 
         # ----- 市場活況度スコア（BSR 履歴から月別中央値）-----
         # 各 ASIN の BSR 履歴を月別に集約 → 中央値を算出 → 全在庫で月別中央値

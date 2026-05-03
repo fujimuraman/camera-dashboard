@@ -30,6 +30,7 @@
           <th title="期間内に売れた個数（Pending除外、返品は設定に依存）">販売数</th>
           <th title="期間内の売上総額（item_price × qty_ordered の合計）">売上金額</th>
           <th title="現在の Active 在庫の仕入価格 × 数量の合計（棚卸資産・期末時点）">在庫金額</th>
+          <th title="現在の出品中商品数（Active かつ qty>0 の SKU 数）">在庫数</th>
           <th title="期間内の仕入総額（cost_price × qty_ordered）">仕入金額</th>
           <th title="個別注文手数料（Commission/FBA手数料、確定値+推定）+ 月次サブスク等（Finances API）">Amazon手数料</th>
           <th title="経費画面で入力した月次経費（Amazon利用料以外）+ 発送代行手数料(基本料 × 月数 + 1商品単位 × 数量)">その他経費</th>
@@ -41,6 +42,7 @@
           <td>{{ kpi.qty_total }} コ</td>
           <td>{{ "{:,}".format(kpi.sales_total|int) }} 円</td>
           <td>{{ "{:,}".format(kpi.inventory_value|int) }} 円</td>
+          <td>{{ kpi.inventory_count }} コ</td>
           <td class="text-danger">-{{ "{:,}".format(kpi.cost_total|int) }} 円</td>
           <td class="text-danger">-{{ "{:,}".format(kpi.amazon_fee_total|int) }} 円</td>
           <td class="text-danger">-{{ "{:,}".format(kpi.other_expense|int) }} 円</td>
@@ -54,6 +56,7 @@
           <th title="販売数 ÷ 期間日数">平均売上数/日</th>
           <th title="売上金額 ÷ 販売数">平均売上単価/個</th>
           <th title="仕入金額 ÷ 販売数">平均仕入単価/個</th>
+          <th title="利益額 ÷ 販売数（利益単価）">平均利益単価/個</th>
           <th title="送料 + ギフト入金（Finances API の ItemChargeList より）">送料/ギフト入金</th>
           <th title="顧客に付与した Amazon ポイント（未対応・将来 Finances API で実装）">ポイント</th>
           <th title="期間内の返品。設定の返品扱いが「除外」なら参考表示、「返金控除」なら利益から差し引く">返品</th>
@@ -65,6 +68,9 @@
           <td>{{ "%.2f"|format(kpi.avg_qty_per_day) }}</td>
           <td>{{ "{:,.2f}".format(kpi.avg_price_per_unit) }} 円</td>
           <td>{{ "{:,.2f}".format(kpi.avg_cost_per_unit) }} 円</td>
+          <td class="{% if kpi.avg_profit_per_unit > 0 %}text-success{% else %}text-danger{% endif %}">
+            {{ "{:,.2f}".format(kpi.avg_profit_per_unit) }} 円
+          </td>
           <td>{{ "{:,}".format(kpi.shipping_income|int) }} 円</td>
           <td>0 pt</td>
           <td class="{% if return_model == 'subtract_refund' %}text-danger{% else %}text-muted{% endif %}">
@@ -179,7 +185,10 @@ const fmtYen = (v) => {
 };
 window.PREV_LABEL = {{ prev_label|tojson }};
 
-function mkChart(id, data, withCum) {
+function mkChart(id, data, withCum, opts) {
+  opts = opts || {};
+  const withProfitBar = !!opts.withProfitBar;     // 月別だけ利益棒も追加
+  const withInventory = !!opts.withInventory;     // 月別/日別: 在庫数の推定推移を線で
   // 凡例順を ダッシュボード と統一: 累計売上 → 累計利益 → 前期間累計売上 → 日次売上 → 販売数
   const datasets = [];
   const scales = {
@@ -191,7 +200,7 @@ function mkChart(id, data, withCum) {
           grid: { drawOnChartArea: false } }
   };
   // ※ Chart.js は dataset.order の昇順で凡例を並べるため、表示順に番号を振る
-  // 凡例順: 累計売上(1) / 累計利益(2) / 前同期間累計売上(3) / 日次売上(4) / 販売数(5)
+  // 凡例順: 累計売上(1) / 累計利益(2) / 前同期間累計売上(3) / 日次売上(4) / 利益(5) / 販売数(6) / 在庫数(7)
   if (withCum) {
     datasets.push({
       type: 'line', label: '累計売上 (円)', data: data.map(d => d.cum),
@@ -225,10 +234,28 @@ function mkChart(id, data, withCum) {
     type: 'bar', label: '日次売上 (円)', data: data.map(d => d.sales),
     backgroundColor: rgba(C.sales, 0.65), yAxisID: 'y', order: 4
   });
+  if (withProfitBar) {
+    // 月別タブのみ: 各月の利益額を棒グラフで重ねる（売上と同じ y 軸）
+    datasets.push({
+      type: 'bar', label: '利益額 (円)', data: data.map(d => d.profit || 0),
+      backgroundColor: rgba(C.profit, 0.65), yAxisID: 'y', order: 5
+    });
+  }
   datasets.push({
     type: 'bar', label: '販売数', data: data.map(d => d.qty),
-    backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 5
+    backgroundColor: rgba(C.qty, 0.65), yAxisID: 'y1', order: 6
   });
+  if (withInventory) {
+    // 在庫数の推定推移（現在在庫から逆算、補充は無視）
+    datasets.push({
+      type: 'line', label: '在庫数（推定）',
+      data: data.map(d => (d.inv_est === undefined ? null : d.inv_est)),
+      borderColor: '#0ea5e9',
+      backgroundColor: '#0ea5e9',
+      pointRadius: 2, tension: 0.2, yAxisID: 'y1', order: 7,
+      borderDash: [4, 3], spanGaps: true,
+    });
+  }
   // 市場活況度スコア（月別タブのみ・BSR 中央値から算出）
   // 線は折れ線、右軸 y1（販売数と同居）。null は非表示で skip。
   const hasMarket = data.some(d => d && d.market_score !== undefined && d.market_score !== null);
@@ -284,10 +311,10 @@ function mkChart(id, data, withCum) {
     }
   });
 }
-mkChart('chMonthly', {{ monthly|tojson }}, false);
-mkChart('chDaily',   {{ daily|tojson }}, true);
-mkChart('chDow',     {{ dow|tojson }}, false);
-mkChart('chHour',    {{ hour|tojson }}, false);
+mkChart('chMonthly', {{ monthly|tojson }}, false, { withProfitBar: true, withInventory: true });
+mkChart('chDaily',   {{ daily|tojson }},   true,  { withInventory: true });
+mkChart('chDow',     {{ dow|tojson }},     false);
+mkChart('chHour',    {{ hour|tojson }},    false);
 
 // === 円グラフ: 販売実績の分布（経過日数別） ===
 {% if sold_buckets %}

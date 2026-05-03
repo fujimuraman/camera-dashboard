@@ -1,13 +1,21 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h2>📊 ダッシュボード</h2>
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <h2 class="mb-0">📊 ダッシュボード <small class="text-muted" style="font-size:0.7em">— {{ year_month }}</small></h2>
+  <form class="d-flex gap-2" method="get">
+    <select name="preset" class="form-select form-select-sm" onchange="this.form.submit()">
+      <option value="this" {% if preset=='this' %}selected{% endif %}>当月</option>
+      <option value="prev" {% if preset=='prev' %}selected{% endif %}>前月</option>
+    </select>
+  </form>
+</div>
 
 <div class="row g-3 my-3">
   <div class="col-md col-6">
     <div class="card dash-card dash-sales">
       <div class="card-body">
-        <h6 class="card-subtitle">今月の売上</h6>
+        <h6 class="card-subtitle">{% if preset=='prev' %}前月{% else %}今月{% endif %}の売上</h6>
         <h3>¥{{ "{:,}".format(stats.sales_total|int) }}</h3>
       </div>
     </div>
@@ -15,7 +23,7 @@
   <div class="col-md col-6">
     <div class="card dash-card dash-qty">
       <div class="card-body">
-        <h6 class="card-subtitle">今月の販売数</h6>
+        <h6 class="card-subtitle">{% if preset=='prev' %}前月{% else %}今月{% endif %}の販売数</h6>
         <h3>{{ stats.qty_total }} 個</h3>
       </div>
     </div>
@@ -23,7 +31,7 @@
   <div class="col-md col-6">
     <div class="card dash-card dash-cost">
       <div class="card-body">
-        <h6 class="card-subtitle">今月の仕入額</h6>
+        <h6 class="card-subtitle">{% if preset=='prev' %}前月{% else %}今月{% endif %}の仕入額</h6>
         <h3>¥{{ "{:,}".format(stats.cost_total|int) }}</h3>
       </div>
     </div>
@@ -31,7 +39,7 @@
   <div class="col-md col-6">
     <div class="card dash-card dash-profit">
       <div class="card-body">
-        <h6 class="card-subtitle">今月の利益額</h6>
+        <h6 class="card-subtitle">{% if preset=='prev' %}前月{% else %}今月{% endif %}の利益額</h6>
         <h3>¥{{ "{:,}".format(stats.profit|int) }}</h3>
       </div>
     </div>
