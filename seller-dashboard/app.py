@@ -2006,7 +2006,10 @@ def create_app():
         per_day_exp = fixed_total_for_period / days_in_period if days_in_period else 0
 
         # 日別（全日付 0 埋め＋累計）
-        # 横軸範囲は chart_daily_start〜chart_daily_end（preset=this は月末まで延長、未来日は値0）
+        # 横軸範囲は chart_daily_start〜chart_daily_end（preset=this は月末まで延長）
+        # 未来日: 売上=0 で 累計売上 は据え置き / 利益も per_day_exp を加算せず据え置き
+        # （実測値のみで構成し、未来日は最新値のまま水平延長）
+        today_iso = datetime.now().date().isoformat()
         daily = []
         cum_s = 0; cum_p = 0
         cur = datetime.combine(chart_daily_start, datetime.min.time())
@@ -2014,7 +2017,11 @@ def create_app():
         while cur <= end_dt:
             key = cur.strftime("%Y-%m-%d")
             b = by_day.get(key, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
-            prof = _profit_of(b, per_day_exp)
+            if key > today_iso:
+                # 未来日: 固定費按分 (per_day_exp) も計上しない → 累計利益が水平延長
+                prof = 0
+            else:
+                prof = _profit_of(b, per_day_exp)
             cum_s += b["sales"]
             cum_p += prof
             daily.append({
