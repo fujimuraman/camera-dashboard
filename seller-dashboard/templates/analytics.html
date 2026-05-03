@@ -247,7 +247,9 @@ function mkChart(id, data, withCum, opts) {
     scales.yCum = {
       type: 'linear', position: 'left', min: 0,
       ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 5, font: tickFont },
-      grid: { drawOnChartArea: false }, offset: true,
+      grid: { drawOnChartArea: false },
+      // offset: true を外す → 上下の不要な余白が無くなり、累計売上線が
+      // 最大値で軸の最上部まで届くようになる
       title: { display: true, text: '累計売上', color: C.salesCum, font: titleFont }
     };
     // 累計利益は単独スケール（表示しない hidden 軸）。
