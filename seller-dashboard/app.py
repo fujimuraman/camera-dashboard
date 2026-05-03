@@ -1040,17 +1040,57 @@ def create_app():
                 prev_month.append({"d": d, "cum": prev_cum})
 
             # 最新の売れた商品10件（Pendingは item_price が NULL/0 の場合 inventory.listing_price で補完）
-            recent_sold = conn.execute("""
+            # 利益も推定値で算出: 売価 - 仕入 - Amazon手数料 - 発送代行(per_item)
+            _recent_rows = conn.execute("""
                 SELECT o.purchase_date, oi.title, oi.seller_sku,
-                       COALESCE(NULLIF(oi.item_price, 0), inv.listing_price) AS item_price,
-                       (oi.item_price IS NULL OR oi.item_price = 0) AS price_estimated,
+                       oi.item_price, oi.quantity_ordered,
+                       oi.amazon_fee, oi.amazon_fee_confirmed,
+                       oi.shipping_price, oi.promotion_discount,
+                       cp.cost_price,
+                       inv.listing_price AS listing_price,
                        o.order_status
                 FROM orders o
                 JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+                LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
                 LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
                 WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
                 ORDER BY o.purchase_date DESC LIMIT 10
             """).fetchall()
+            # per_item 発送代行手数料（最新の設定値）
+            _ship_row = conn.execute(
+                "SELECT per_item_fee FROM shipping_agent_fees ORDER BY effective_from DESC LIMIT 1"
+            ).fetchone()
+            _ship_per = ((_ship_row["per_item_fee"] if _ship_row else 0) or 0)
+
+            recent_sold = []
+            for r in _recent_rows:
+                price = r["item_price"] or 0
+                qty = r["quantity_ordered"] or 1
+                # Pending で価格未確定なら listing_price で推定
+                price_est = price == 0 or r["item_price"] is None
+                if price_est:
+                    price = r["listing_price"] or 0
+                # Amazon 手数料: 確定値があればそれ、無ければレート推定
+                if r["amazon_fee_confirmed"] and r["amazon_fee"]:
+                    fee = r["amazon_fee"]
+                else:
+                    rate = estimate_amazon_fee_rate(r["title"] or "", None)
+                    fee = round(price * rate) * qty
+                cost = (r["cost_price"] or 0) * qty
+                ship_in = r["shipping_price"] or 0
+                promo = r["promotion_discount"] or 0
+                profit_est = (price * qty + ship_in) - cost - fee - (_ship_per * qty) - promo
+                recent_sold.append({
+                    "purchase_date": r["purchase_date"],
+                    "seller_sku": r["seller_sku"],
+                    "title": r["title"],
+                    "item_price": price,
+                    "price_estimated": price_est,
+                    "order_status": r["order_status"],
+                    "profit_est": int(round(profit_est)),
+                    # 仕入が登録されていない or 0 の場合は利益推定の信頼度が低い
+                    "profit_unreliable": (r["cost_price"] or 0) == 0,
+                })
 
         return render_template(
             "dashboard.html",

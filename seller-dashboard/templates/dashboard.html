@@ -83,7 +83,7 @@
 <h4 class="mt-4">🆕 最新の売れた商品</h4>
 <div class="table-responsive">
   <table class="table table-sm table-striped">
-    <thead><tr><th>購入日</th><th>SKU</th><th>商品名</th><th class="text-end">価格</th></tr></thead>
+    <thead><tr><th>購入日</th><th>SKU</th><th>商品名</th><th class="text-end">価格</th><th class="text-end" title="売価 − 仕入 − Amazon手数料 − 発送代行(個別) − プロモ。月次按分の固定費は含めない簡易推定">利益</th></tr></thead>
     <tbody>
       {% for r in recent_sold %}
       <tr>
@@ -100,9 +100,19 @@
             ¥{{ "{:,}".format(r.item_price|int) if r.item_price else '-' }}
           {% endif %}
         </td>
+        <td class="text-end">
+          {% if r.profit_unreliable %}
+            <span class="text-muted" title="仕入価格が未登録のため利益不明">—</span>
+          {% else %}
+            <span class="{% if r.profit_est > 0 %}text-success{% else %}text-danger{% endif %}"
+                  title="推定利益（売価 − 仕入 − Amazon手数料 − 発送代行(per_item) − プロモ）">
+              ¥{{ "{:,}".format(r.profit_est) }}
+            </span>
+          {% endif %}
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="4" class="text-muted">データがありません。Polling を実行してください。</td></tr>
+      <tr><td colspan="5" class="text-muted">データがありません。Polling を実行してください。</td></tr>
       {% endfor %}
     </tbody>
   </table>
