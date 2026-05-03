@@ -978,9 +978,18 @@ def create_app():
                 (ym,),
             ).fetchone()[0] or 0
             # KPI で算出済みの ship_total（base + per_item × ASIN登録数）を使用。
-            # 累計利益が KPI 利益と一致するよう、per_item は qty 掛けではなく
-            # ASIN 登録ベースの ship_total を日割り按分する。
-            per_day_fixed = (ship_total + other) / days_in_month
+            # 累計利益が KPI 利益と一致するよう、固定費（ship_total + other）を
+            # 「実績がある日数」で割って日割り按分する。
+            #   preset=this（当月）: 月初〜今日までの日数（例: 5/3 なら3日）
+            #   preset=prev（前月）: 月初〜月末日までの全日（=days_in_month）
+            # full days_in_month で割ると未来側を含めるため、KPI が full 固定費を
+            # 引いているのに対し累計利益は経過分しか引けず KPI と乖離する。
+            today_for_fixed = datetime.now().date()
+            days_passed_in_target = max(1, min(
+                (today_for_fixed - first.date()).days + 1,
+                days_in_month
+            ))
+            per_day_fixed = (ship_total + other) / days_passed_in_target
 
             this_month = []
             cum_sales = 0
