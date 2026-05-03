@@ -652,12 +652,14 @@ def _start_scheduler(app):
     scheduler.add_job(cleanup_job, "interval", days=1, id="cleanup_polling_log",
                       replace_existing=True, next_run_time=_dt.now() + _td(minutes=5))
 
-    # 在庫数スナップショット: 1日1回（起動2分後 + 1日間隔）
-    # 売上分析の在庫数推移を「実測値」で表示するため
+    # 在庫数スナップショット: アプリ起動時に即時1回 + 以降1日間隔
+    # ダッシュボードを起動している間だけスナップショットが溜まる仕組み
+    # （cron や Windows タスクスケジューラ等の OS 機構には依存しない）。
+    # → 短時間しか起動しないユーザでも、起動の度に1件は確実に記録される。
     scheduler.add_job(record_inventory_snapshot, "interval", days=1,
                       id="inventory_snapshot",
                       replace_existing=True,
-                      next_run_time=_dt.now() + _td(minutes=2))
+                      next_run_time=_dt.now() + _td(seconds=10))
     # 市場BSR取得（設定に従って初期登録）
     reschedule_market_bsr_job()
     # 設定保存後に呼び出せるようにアプリ属性として公開
