@@ -1870,10 +1870,13 @@ def create_app():
                   - cost_total - amz_fee_total - other_exp_total
                   - promotion_total - refund_deduction)
         # 現在の出品中商品数（Active かつ qty > 0）
-        inventory_count_now = conn.execute("""
-            SELECT COUNT(*) AS c FROM inventory
-            WHERE status LIKE 'Active%' AND quantity > 0
-        """).fetchone()["c"]
+        # NOTE: 元の with get_db() as conn: ブロックは既に閉じている可能性があるので
+        # 別接続で取り直す。読み取り専用なので安全。
+        with get_db() as _conn_inv:
+            inventory_count_now = _conn_inv.execute("""
+                SELECT COUNT(*) AS c FROM inventory
+                WHERE status LIKE 'Active%' AND quantity > 0
+            """).fetchone()["c"]
         kpi = {
             "qty_total": qty_total,
             "sales_total": sales_total,
