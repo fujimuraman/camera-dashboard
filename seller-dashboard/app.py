@@ -1788,7 +1788,9 @@ def create_app():
             # 月別の ASIN登録数（販売済み含む全SKU）を取得して
             # ship_total = Σ (base + per_item × ASIN登録数_in_month)
             # ※注: 注文画面の per-order 代行手数料は最新の per_item_fee 単一値を使用
+            # ship_total_by_ym: 月別グラフで月毎の発送代行を引くために保持
             ship_total = 0
+            ship_total_by_ym = {}
             for ym in sorted(ym_set):
                 # その月有効の base_fee, per_item_fee（effective_from <= 月初）
                 eff = ym + "-01"
@@ -1807,7 +1809,9 @@ def create_app():
                     (ym_slash,)
                 ).fetchone()
                 m_asin = (arow["n"] if arow else 0) or 0
-                ship_total += m_base + m_per * m_asin
+                m_ship_total = m_base + m_per * m_asin
+                ship_total_by_ym[ym] = m_ship_total
+                ship_total += m_ship_total
 
             other_exp = 0
             amz_fee_from_expense = 0
@@ -1992,17 +1996,18 @@ def create_app():
 
         # --- グラフ用データ生成（売上・販売数・利益・累計売上）---
         # 行別の経費・発送代行を日次配分するための単位
-        # 「その他経費」は月按分で表示月の日別に均等割り、発送代行(base) は月按分、per_item は実績数量ベース
+        # 固定費: ship_total（base + per_item × ASIN登録数）+ other_exp を期間の日数で均等割り。
+        # KPI 利益と式を完全一致させるため、per_item を qty 掛けではなく、登録ASIN数ベースの
+        # ship_total を日割り按分する形に統一（差分: 売れ残り ASIN 分の per_item を含むか否か）。
         def _profit_of(b, exp_per_day=0):
             """バケットから利益を算出。exp_per_day=この期間単位に按分した固定費"""
             p = (b["sales"] + b["ship"]
                  - b["cost"] - b["fee"] - b["promo"] - exp_per_day)
-            # per_item 発送代行
-            p -= ship_per_item * b["qty"]
             return p
 
-        # 期間の固定費（発送代行 base_fee × 月数 + other_exp）を日数で均等割り
-        fixed_total_for_period = ship_base * len(ym_set) + other_exp
+        # 期間の固定費（発送代行 ship_total + other_exp）を日数で均等割り
+        # ship_total は 1791-1810 で算出済み: Σ(base + per_item × ASIN登録数_in_month)
+        fixed_total_for_period = ship_total + other_exp
         per_day_exp = fixed_total_for_period / days_in_period if days_in_period else 0
 
         # 日別（全日付 0 埋め＋累計）
@@ -2107,10 +2112,14 @@ def create_app():
         else:
             month_keys = sorted(by_month.keys())
         monthly = []
+        # other_exp は月数で均等割り（preset=year で 12月分）
+        other_exp_per_month = other_exp / max(1, len(ym_set))
         for k in month_keys:
             b = by_month.get(k, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
-            # 月別は base_fee をその月分だけ＆other_exp は月按分、qty × per_item
-            per_month_exp = (ship_base + (other_exp / max(1, len(ym_set))))
+            # その月の ship_total（base + per_item × その月のASIN登録数）+ その月の other_exp
+            # KPI と同じ式で月毎に引くことで合計が KPI 利益と一致する
+            m_ship = ship_total_by_ym.get(k, 0)
+            per_month_exp = m_ship + other_exp_per_month
             prof = _profit_of(b, per_month_exp)
             monthly.append({"k": k, "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
         # 月別: 前期間（年なら前年）の月別売上を同じ月数で並べる
