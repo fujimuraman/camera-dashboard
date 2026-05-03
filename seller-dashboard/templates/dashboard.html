@@ -172,9 +172,9 @@ new Chart(document.getElementById('monthChart'), {
       { type: 'line', label: '累計売上 (円)', data: cumSales,
         borderColor: C.salesCum, backgroundColor: C.salesCum,
         pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 1 },
-      { type: 'line', label: '累計利益 (円)', data: cumProfit,
+      { type: 'line', label: '累計利益 (円・別スケール)', data: cumProfit,
         borderColor: C.profitCum, backgroundColor: C.profitCum,
-        pointRadius: 2, tension: 0.2, yAxisID: 'yCum', order: 2 },
+        pointRadius: 2, tension: 0.2, yAxisID: 'yProfitCum', order: 2 },
       { type: 'line', label: '前月 累計売上 (' + prevYmLabel + ')',
         data: prevCumSales,
         borderColor: 'rgba(120, 120, 120, 0.7)',
@@ -203,19 +203,26 @@ new Chart(document.getElementById('monthChart'), {
     scales: (() => {
       // 画面幅で軸構成を切替: Webは左2軸（広いので余裕）/ スマホは累計軸非表示
       const isWide = window.matchMedia('(min-width: 768px)').matches;
+      // 累計利益は累計売上と桁が違うため別軸（隠し）に分離。
+      // 売上分析と同じく max = 利益最大値×3 で固定して、利益線を画面下 1/3 程度に抑える
+      const profitMax = Math.max(0, ...cumProfit);
       return {
-        y:    { type: 'linear', position: 'left',
+        y:    { type: 'linear', position: 'left', min: 0,
                 ticks: { color: C.sales, callback: fmtShort, maxTicksLimit: 6 },
                 grid: { color: 'rgba(0,0,0,0.06)' },
                 title: isWide ? { display: true, text: '日次売上', color: C.sales } : { display: false } },
         yCum: isWide
-          ? { type: 'linear', position: 'left',
+          ? { type: 'linear', position: 'left', min: 0,
               ticks: { color: C.salesCum, callback: fmtShort, maxTicksLimit: 6 },
-              grid: { drawOnChartArea: false }, offset: true,
-              title: { display: true, text: '累計 売上/利益', color: C.salesCum } }
+              grid: { drawOnChartArea: false },
+              title: { display: true, text: '累計売上', color: C.salesCum } }
           : { type: 'linear', position: 'left', display: false,
               grid: { drawOnChartArea: false } },
-        y1:   { type: 'linear', position: 'right',
+        // 累計利益用の隠し軸（軸目盛もタイトルも非表示）
+        yProfitCum: { type: 'linear', position: 'left', min: 0,
+                      max: profitMax > 0 ? profitMax * 3 : undefined,
+                      display: false },
+        y1:   { type: 'linear', position: 'right', min: 0,
                 ticks: { color: C.qty, stepSize: 1, maxTicksLimit: 6 },
                 grid: { drawOnChartArea: false } }
       };
