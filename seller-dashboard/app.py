@@ -2302,6 +2302,28 @@ def create_app():
             for m in monthly:
                 m["market_full_score"] = None
                 m["market_full_bsr"] = None
+            _market_full = {}
+
+        # daily にも market_score / market_full_score を埋める（その日の YYYY-MM の値を流用）
+        # BSR ベースのスコアは月単位の集約値なので、同月内の各日は同じ値を持つ
+        for _i, _d in enumerate(daily):
+            _day_dt = chart_daily_start + timedelta(days=_i)
+            _day_ym = _day_dt.strftime("%Y-%m")
+            _ks = ym_score.get(_day_ym)
+            if _ks:
+                _d["market_score"] = _ks["score"]
+                _d["market_bsr"] = _ks["median_bsr"]
+            else:
+                _d["market_score"] = None
+                _d["market_bsr"] = None
+            _mf = _market_full.get(_day_ym) if isinstance(_market_full, dict) else None
+            if _mf:
+                _d["market_full_score"] = _mf["score"]
+                _d["market_full_bsr"] = _mf["median_bsr"]
+            else:
+                _d["market_full_score"] = None
+                _d["market_full_bsr"] = None
+
         # DEBUG
         try:
             with open(r"C:\claude\seller-dashboard\logs\market_debug.log", "a", encoding="utf-8") as _f:
