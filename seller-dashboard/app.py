@@ -2337,19 +2337,16 @@ def create_app():
 
         # daily にスコアを埋める:
         #   - 自社在庫スコア (market_score): 日次集計値を使用（在庫ASINだけなので軽い）
-        #   - 自社事業の市況スコア (market_full_score): 月次のまま（その日の YYYY-MM）
+        #   - 自社事業の市況スコア (market_full_score): 日別タブでは表示しない（月次のみ）
         #   - 未来日付（today より後）はプロットしない（None）
         _today_iso = _today.isoformat()
         for _i, _d in enumerate(daily):
             _day_dt = chart_daily_start + timedelta(days=_i)
             _day_iso = _day_dt.isoformat()
-            _day_ym = _day_dt.strftime("%Y-%m")
             if _day_iso > _today_iso:
                 # 未来日: スコアプロット不要
                 _d["market_score"] = None
                 _d["market_bsr"] = None
-                _d["market_full_score"] = None
-                _d["market_full_bsr"] = None
                 continue
             # 自社在庫スコア: 日次集計
             _ks = day_score.get(_day_iso)
@@ -2359,14 +2356,6 @@ def create_app():
             else:
                 _d["market_score"] = None
                 _d["market_bsr"] = None
-            # 自社事業の市況スコア: 月次キャッシュ流用（同月内同値で水平）
-            _mf = _market_full.get(_day_ym) if isinstance(_market_full, dict) else None
-            if _mf:
-                _d["market_full_score"] = _mf["score"]
-                _d["market_full_bsr"] = _mf["median_bsr"]
-            else:
-                _d["market_full_score"] = None
-                _d["market_full_bsr"] = None
 
         # DEBUG
         try:
