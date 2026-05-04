@@ -2218,6 +2218,7 @@ def create_app():
             except Exception as _e:
                 pass
         market_score_by_ym = {}  # ym -> [median_bsr_per_asin, ...]
+        market_score_by_day = {}  # "YYYY-MM-DD" -> [median_bsr_per_asin, ...]  日次集計（在庫スコア用）
         _dbg_cnt = {"rows":0, "hist_items":0, "valid_items":0, "asins_with_ym":0}
         _exc_log = []
         for _r in _bsr_rows:
@@ -2231,6 +2232,7 @@ def create_app():
             if _dbg_cnt["rows"] <= 2:
                 _exc_log.append(f"row{_dbg_cnt['rows']} type={type(_r).__name__} histtype={type(hist).__name__} histlen={len(hist) if hasattr(hist,'__len__') else '?'}")
             asin_by_ym = {}  # ym -> [rank, ...]
+            asin_by_day = {}  # "YYYY-MM-DD" -> [rank, ...]
             for h in hist:
                 _dbg_cnt["hist_items"] += 1
                 _date = h.get("date") or ""
@@ -2239,7 +2241,10 @@ def create_app():
                     continue
                 _dbg_cnt["valid_items"] += 1
                 _ym = _date[:7]
+                _day = _date[:10]
                 asin_by_ym.setdefault(_ym, []).append(_rank)
+                if len(_day) == 10:
+                    asin_by_day.setdefault(_day, []).append(_rank)
             if asin_by_ym:
                 _dbg_cnt["asins_with_ym"] += 1
             for _ym, _ranks in asin_by_ym.items():
@@ -2247,6 +2252,11 @@ def create_app():
                     continue
                 _med = sorted(_ranks)[len(_ranks) // 2]  # その商品のその月中央値
                 market_score_by_ym.setdefault(_ym, []).append(_med)
+            for _day, _ranks in asin_by_day.items():
+                if not _ranks:
+                    continue
+                _med = sorted(_ranks)[len(_ranks) // 2]  # その商品のその日中央値
+                market_score_by_day.setdefault(_day, []).append(_med)
         # 各月で全在庫の中央値 → 原始スコア化
         ym_score = {}
         for _ym, _meds in market_score_by_ym.items():
@@ -2256,6 +2266,15 @@ def create_app():
             _global_med = _sorted[len(_sorted) // 2]
             _raw = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
             ym_score[_ym] = {"raw": _raw, "median_bsr": _global_med}
+        # 各日で全在庫の中央値 → 原始スコア化
+        day_score = {}
+        for _day, _meds in market_score_by_day.items():
+            if not _meds:
+                continue
+            _sorted = sorted(_meds)
+            _global_med = _sorted[len(_sorted) // 2]
+            _raw = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
+            day_score[_day] = {"raw": _raw, "median_bsr": _global_med}
         # 過去5年（直近60ヶ月）の min/max を取得し 10-90 にスケーリング
         from datetime import date as _date_cls
         _today = _date_cls.today()
@@ -2271,6 +2290,18 @@ def create_app():
                 v["score"] = round(max(0, min(100, _scaled)), 1)
         else:
             for _ym, v in ym_score.items():
+                v["score"] = round(v["raw"], 1)
+        # 日次は過去5年（1825日）の min/max でスケーリング（月次とは別系列）
+        _cutoff_day_iso = (_today - timedelta(days=1825)).isoformat()
+        _recent_raws_d = [v["raw"] for k, v in day_score.items() if k >= _cutoff_day_iso]
+        if _recent_raws_d and len(_recent_raws_d) >= 2:
+            _rmin_d, _rmax_d = min(_recent_raws_d), max(_recent_raws_d)
+            _span_d = max(0.01, _rmax_d - _rmin_d)
+            for _day, v in day_score.items():
+                _scaled = 10 + (v["raw"] - _rmin_d) / _span_d * 80
+                v["score"] = round(max(0, min(100, _scaled)), 1)
+        else:
+            for _day, v in day_score.items():
                 v["score"] = round(v["raw"], 1)
         # monthly に market_score / market_bsr を埋める
         for m in monthly:
@@ -2304,18 +2335,31 @@ def create_app():
                 m["market_full_bsr"] = None
             _market_full = {}
 
-        # daily にも market_score / market_full_score を埋める（その日の YYYY-MM の値を流用）
-        # BSR ベースのスコアは月単位の集約値なので、同月内の各日は同じ値を持つ
+        # daily にスコアを埋める:
+        #   - 自社在庫スコア (market_score): 日次集計値を使用（在庫ASINだけなので軽い）
+        #   - 自社事業の市況スコア (market_full_score): 月次のまま（その日の YYYY-MM）
+        #   - 未来日付（today より後）はプロットしない（None）
+        _today_iso = _today.isoformat()
         for _i, _d in enumerate(daily):
             _day_dt = chart_daily_start + timedelta(days=_i)
+            _day_iso = _day_dt.isoformat()
             _day_ym = _day_dt.strftime("%Y-%m")
-            _ks = ym_score.get(_day_ym)
+            if _day_iso > _today_iso:
+                # 未来日: スコアプロット不要
+                _d["market_score"] = None
+                _d["market_bsr"] = None
+                _d["market_full_score"] = None
+                _d["market_full_bsr"] = None
+                continue
+            # 自社在庫スコア: 日次集計
+            _ks = day_score.get(_day_iso)
             if _ks:
                 _d["market_score"] = _ks["score"]
                 _d["market_bsr"] = _ks["median_bsr"]
             else:
                 _d["market_score"] = None
                 _d["market_bsr"] = None
+            # 自社事業の市況スコア: 月次キャッシュ流用（同月内同値で水平）
             _mf = _market_full.get(_day_ym) if isinstance(_market_full, dict) else None
             if _mf:
                 _d["market_full_score"] = _mf["score"]
