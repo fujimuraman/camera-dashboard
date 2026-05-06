@@ -123,9 +123,10 @@ CREATE TABLE IF NOT EXISTS financial_events (
   posted_date TEXT,
   fee_type TEXT,
   amount REAL,
-  currency TEXT,
-  raw_json TEXT
+  currency TEXT
 );
+-- 注: 旧 raw_json カラムは2026-05に廃止（92MB肥大化、未使用のため）。
+-- 既存DBには ALTER TABLE DROP COLUMN しないとカラム自体は残るが、INSERT/SELECT 共に未参照のため実害なし。
 CREATE INDEX IF NOT EXISTS idx_fin_order ON financial_events(amazon_order_id);
 
 -- 価格変更ログ
@@ -192,15 +193,6 @@ CREATE TABLE IF NOT EXISTS market_bsr_meta (
   source TEXT
 );
 
--- BSR 日次履歴の正規化テーブル（参照用。重複した可視化が要らなければ未使用でも可）
-CREATE TABLE IF NOT EXISTS market_bsr_history (
-  asin TEXT,
-  date TEXT,
-  rank INTEGER,
-  fetched_at TEXT,
-  PRIMARY KEY (asin, date)
-);
-
 -- 市場活況スコアのキャッシュ（ym='YYYY-MM'、score=10〜90、median_bsr=その月の中央値）
 CREATE TABLE IF NOT EXISTS market_score_cache (
   ym TEXT PRIMARY KEY,
@@ -210,6 +202,23 @@ CREATE TABLE IF NOT EXISTS market_score_cache (
   asin_count INTEGER,
   updated_at TEXT
 );
+
+-- BSRスコアの日次キャッシュ（売上分析の日別グラフ高速化用）
+-- source = 'inventory' または 'market'。同じ date でも source 違いで2行入る
+-- 在庫＋市況の raw を共通スケーリングするため、scaled_score はバッチ計算時に統一min/max適用済
+-- has_inventory_count = その date にデータあるASINのうち自社在庫保有数（market集計時の付加情報）
+CREATE TABLE IF NOT EXISTS bsr_score_daily_cache (
+  date TEXT NOT NULL,
+  source TEXT NOT NULL,
+  asin_count INTEGER,
+  has_inventory_count INTEGER,
+  median_bsr INTEGER,
+  raw_score REAL,
+  scaled_score REAL,
+  updated_at TEXT,
+  PRIMARY KEY (date, source)
+);
+CREATE INDEX IF NOT EXISTS idx_bsr_score_daily_date ON bsr_score_daily_cache(date);
 
 -- 在庫数の日次スナップショット（売上分析の在庫数推移を「実測」で表示するため）
 -- snapshot_date = "YYYY-MM-DD"、count_active = Active && qty>0 の SKU 数、value = 仕入価格 × 数量の合計

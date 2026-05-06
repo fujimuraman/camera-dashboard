@@ -478,4 +478,72 @@
   </div>
 </form>
 
+<!-- ============================================================ -->
+<!-- DB メンテナンス: 2年より古いデータ削除 -->
+<!-- ============================================================ -->
+{% if db_maint %}
+<div class="card mb-4">
+  <div class="card-header bg-warning-subtle">
+    <strong>🗄️ DBメンテナンス</strong>
+    <span class="text-muted small">
+      （{{ db_maint.cutoff }} より古いデータが対象。削除後は VACUUM で実ファイルも縮小）
+    </span>
+  </div>
+  <div class="card-body">
+    <table class="table table-sm align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>テーブル</th>
+          <th class="text-end">件数</th>
+          <th class="text-end">推定サイズ</th>
+          <th class="text-end">2年超 件数</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for key, label in [
+          ('financial_events', '財務イベント (Amazon手数料明細)'),
+          ('orders', '注文 (orders)'),
+          ('order_items', '注文明細 (order_items)'),
+          ('price_change_log', '価格変更ログ'),
+        ] %}
+          {% set s = db_maint[key] %}
+          <tr>
+            <td>{{ label }}</td>
+            <td class="text-end">{{ '{:,}'.format(s.total) }}</td>
+            <td class="text-end">{{ '%.1f'|format(s.size_mb) }} MB</td>
+            <td class="text-end">
+              {% if key == 'order_items' %}
+                <span class="text-muted">— (orders 削除と連動)</span>
+              {% else %}
+                {{ '{:,}'.format(s.old) }}
+              {% endif %}
+            </td>
+            <td>
+              {% if key == 'order_items' %}
+                <span class="text-muted small">orders 削除時に自動削除</span>
+              {% else %}
+                <form method="post" class="d-inline"
+                      onsubmit="return confirm('{{ label }} の {{ s.old }} 件（{{ db_maint.cutoff }} より古い）を削除します。\n本当によろしいですか？\n（VACUUM 実行で数秒かかります）');">
+                  <input type="hidden" name="form_type" value="db_cleanup">
+                  <input type="hidden" name="target" value="{{ key }}">
+                  <input type="hidden" name="confirm" value="yes">
+                  <button type="submit" class="btn btn-sm btn-outline-danger"
+                          {% if s.old == 0 %}disabled{% endif %}>
+                    2年超を削除
+                  </button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="alert alert-warning small mb-0">
+      ⚠ 削除は不可逆です。過去データは復元できません（決算等で参照可能性ある場合は実行前にバックアップ推奨）。
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {% endblock %}

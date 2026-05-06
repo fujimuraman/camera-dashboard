@@ -660,6 +660,25 @@ def _start_scheduler(app):
                       id="inventory_snapshot",
                       replace_existing=True,
                       next_run_time=_dt.now() + _td(seconds=10))
+
+    # BSR スコア日次キャッシュ再計算: 1日1回（深夜02:00推奨だが起動時にも1回走らせる）
+    # 用途: analytics 日別グラフを高速化（毎リクエスト約6秒の集計を回避）。
+    def bsr_daily_cache_job():
+        with app.app_context():
+            try:
+                from polling import recompute_bsr_daily_cache
+                r = recompute_bsr_daily_cache()
+                app.logger.info(f"bsr_daily_cache: {r}")
+            except Exception as e:
+                app.logger.error(f"bsr_daily_cache error: {e}")
+    scheduler.add_job(bsr_daily_cache_job, "cron",
+                      hour=2, minute=0, id="bsr_daily_cache",
+                      replace_existing=True)
+    # 起動時にも1回走らせる（cache が空 or 古い場合の保険）
+    scheduler.add_job(bsr_daily_cache_job, "date",
+                      run_date=_dt.now() + _td(seconds=20),
+                      id="bsr_daily_cache_initial", replace_existing=True)
+
     # 市場BSR取得（設定に従って初期登録）
     reschedule_market_bsr_job()
     # 設定保存後に呼び出せるようにアプリ属性として公開
@@ -2217,8 +2236,9 @@ def create_app():
                         _f.write(f"  sample0 len={len(_sample)} head={_sample[:100]}\n")
             except Exception as _e:
                 pass
-        market_score_by_ym = {}  # ym -> [median_bsr_per_asin, ...]
-        market_score_by_day = {}  # "YYYY-MM-DD" -> [median_bsr_per_asin, ...]  日次集計（在庫スコア用）
+        # 月別 ym_score 計算（自社在庫BSRの月別中央値）— 月次グラフ用なので live 計算続行
+        # 日次は別途 bsr_score_daily_cache から取得するため、ここでは月単位のみ集計
+        market_score_by_ym = {}
         _dbg_cnt = {"rows":0, "hist_items":0, "valid_items":0, "asins_with_ym":0}
         _exc_log = []
         for _r in _bsr_rows:
@@ -2229,10 +2249,7 @@ def create_app():
                 if len(_exc_log) < 3:
                     _exc_log.append(f"{type(_je).__name__}: {_je}")
                 continue
-            if _dbg_cnt["rows"] <= 2:
-                _exc_log.append(f"row{_dbg_cnt['rows']} type={type(_r).__name__} histtype={type(hist).__name__} histlen={len(hist) if hasattr(hist,'__len__') else '?'}")
-            asin_by_ym = {}  # ym -> [rank, ...]
-            asin_by_day = {}  # "YYYY-MM-DD" -> [rank, ...]
+            asin_by_ym = {}
             for h in hist:
                 _dbg_cnt["hist_items"] += 1
                 _date = h.get("date") or ""
@@ -2240,24 +2257,14 @@ def create_app():
                 if not _date or not _rank or _rank <= 0:
                     continue
                 _dbg_cnt["valid_items"] += 1
-                _ym = _date[:7]
-                _day = _date[:10]
-                asin_by_ym.setdefault(_ym, []).append(_rank)
-                if len(_day) == 10:
-                    asin_by_day.setdefault(_day, []).append(_rank)
+                asin_by_ym.setdefault(_date[:7], []).append(_rank)
             if asin_by_ym:
                 _dbg_cnt["asins_with_ym"] += 1
             for _ym, _ranks in asin_by_ym.items():
                 if not _ranks:
                     continue
-                _med = sorted(_ranks)[len(_ranks) // 2]  # その商品のその月中央値
+                _med = sorted(_ranks)[len(_ranks) // 2]
                 market_score_by_ym.setdefault(_ym, []).append(_med)
-            for _day, _ranks in asin_by_day.items():
-                if not _ranks:
-                    continue
-                _med = sorted(_ranks)[len(_ranks) // 2]  # その商品のその日中央値
-                market_score_by_day.setdefault(_day, []).append(_med)
-        # 各月で全在庫の中央値 → 原始スコア化
         ym_score = {}
         for _ym, _meds in market_score_by_ym.items():
             if not _meds:
@@ -2266,16 +2273,7 @@ def create_app():
             _global_med = _sorted[len(_sorted) // 2]
             _raw = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
             ym_score[_ym] = {"raw": _raw, "median_bsr": _global_med}
-        # 各日で全在庫の中央値 → 原始スコア化
-        day_score = {}
-        for _day, _meds in market_score_by_day.items():
-            if not _meds:
-                continue
-            _sorted = sorted(_meds)
-            _global_med = _sorted[len(_sorted) // 2]
-            _raw = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
-            day_score[_day] = {"raw": _raw, "median_bsr": _global_med}
-        # 過去5年（直近60ヶ月）の min/max を取得し 10-90 にスケーリング
+        # 過去5年（直近60ヶ月）の min/max でスケーリング
         from datetime import date as _date_cls
         _today = _date_cls.today()
         _cutoff_y = _today.year - 5
@@ -2291,18 +2289,7 @@ def create_app():
         else:
             for _ym, v in ym_score.items():
                 v["score"] = round(v["raw"], 1)
-        # 日次は過去5年（1825日）の min/max でスケーリング（月次とは別系列）
         _cutoff_day_iso = (_today - timedelta(days=1825)).isoformat()
-        _recent_raws_d = [v["raw"] for k, v in day_score.items() if k >= _cutoff_day_iso]
-        if _recent_raws_d and len(_recent_raws_d) >= 2:
-            _rmin_d, _rmax_d = min(_recent_raws_d), max(_recent_raws_d)
-            _span_d = max(0.01, _rmax_d - _rmin_d)
-            for _day, v in day_score.items():
-                _scaled = 10 + (v["raw"] - _rmin_d) / _span_d * 80
-                v["score"] = round(max(0, min(100, _scaled)), 1)
-        else:
-            for _day, v in day_score.items():
-                v["score"] = round(v["raw"], 1)
         # monthly に market_score / market_bsr を埋める
         for m in monthly:
             ks = ym_score.get(m["k"])
@@ -2335,9 +2322,32 @@ def create_app():
                 m["market_full_bsr"] = None
             _market_full = {}
 
+        # ----- 日次BSRスコア: bsr_score_daily_cache から取得（高速）-----
+        # 重い JSON parse + median 計算は深夜バッチで済ませてあるので、ここは SELECT のみ。
+        # cache が空（初回起動直後など）の場合は空dictになり、グラフは market_score=None で表示。
+        day_score = {}        # 自社在庫スコア（source='inventory'）
+        day_score_full = {}   # 自社事業の市況スコア（source='market'）
+        try:
+            with get_db() as _conn_cache:
+                for _r in _conn_cache.execute(
+                    "SELECT date, source, median_bsr, raw_score, scaled_score "
+                    "FROM bsr_score_daily_cache"
+                ):
+                    _entry = {
+                        "median_bsr": _r["median_bsr"],
+                        "raw": _r["raw_score"],
+                        "score": _r["scaled_score"],
+                    }
+                    if _r["source"] == "inventory":
+                        day_score[_r["date"]] = _entry
+                    elif _r["source"] == "market":
+                        day_score_full[_r["date"]] = _entry
+        except Exception:
+            pass
+
         # daily にスコアを埋める:
         #   - 自社在庫スコア (market_score): 日次集計値を使用（在庫ASINだけなので軽い）
-        #   - 自社事業の市況スコア (market_full_score): 日別タブでは表示しない（月次のみ）
+        #   - 自社事業の市況スコア (market_full_score): 月別と同じく市況ASINの日次中央値から算出
         #   - 未来日付（today より後）はプロットしない（None）
         _today_iso = _today.isoformat()
         for _i, _d in enumerate(daily):
@@ -2347,6 +2357,8 @@ def create_app():
                 # 未来日: スコアプロット不要
                 _d["market_score"] = None
                 _d["market_bsr"] = None
+                _d["market_full_score"] = None
+                _d["market_full_bsr"] = None
                 continue
             # 自社在庫スコア: 日次集計
             _ks = day_score.get(_day_iso)
@@ -2356,6 +2368,14 @@ def create_app():
             else:
                 _d["market_score"] = None
                 _d["market_bsr"] = None
+            # 自社事業の市況スコア: 市況ASIN日次集計
+            _ksf = day_score_full.get(_day_iso)
+            if _ksf:
+                _d["market_full_score"] = _ksf["score"]
+                _d["market_full_bsr"] = _ksf["median_bsr"]
+            else:
+                _d["market_full_score"] = None
+                _d["market_full_bsr"] = None
 
         # DEBUG
         try:
@@ -2677,7 +2697,6 @@ def create_app():
                         if mode == "replace":
                             removed = conn.execute("SELECT COUNT(*) FROM market_bsr_meta").fetchone()[0]
                             conn.execute("DELETE FROM market_bsr_meta")
-                            conn.execute("DELETE FROM market_bsr_history")
                         else:
                             removed = 0
                         existing = {r[0] for r in conn.execute("SELECT asin FROM market_bsr_meta").fetchall()}
@@ -2711,10 +2730,6 @@ def create_app():
                                 "SELECT COUNT(*) FROM market_bsr_meta WHERE source='target_list'"
                             ).fetchone()[0]
                             conn.execute("DELETE FROM market_bsr_meta WHERE source='target_list'")
-                            conn.execute(
-                                "DELETE FROM market_bsr_history "
-                                "WHERE asin NOT IN (SELECT asin FROM market_bsr_meta)"
-                            )
                         msg_extra = f" / デフォルトカメラリスト {removed}件削除"
                     elif prev_use_default == "0" and use_default == "1":
                         # ON に戻した場合は seed を再実行（CLI 経由の旨を案内）
@@ -2790,6 +2805,66 @@ def create_app():
                     + (f" -{yen}円" if strategy == 'yen' else f" -{pct}%" if strategy == 'pct' else ""),
                     "success",
                 )
+            elif form_type == "db_cleanup":
+                # DBメンテナンス: 過去2年より前のデータを削除
+                import sqlite3
+                target = request.form.get("target", "")
+                # 確認チェックボックスが付いていなければ拒否（誤操作防止）
+                if request.form.get("confirm") != "yes":
+                    flash("確認チェックが必要です", "warning")
+                    return redirect(url_for("settings"))
+                from datetime import date as _d, timedelta as _td2
+                cutoff_iso = (_d.today() - _td2(days=730)).isoformat()
+                deleted = 0
+                try:
+                    with get_db() as _conn_d:
+                        if target == "financial_events":
+                            r = _conn_d.execute(
+                                "DELETE FROM financial_events WHERE substr(posted_date,1,10) < ?",
+                                (cutoff_iso,)
+                            )
+                            deleted = r.rowcount
+                        elif target == "orders":
+                            # orders の前に order_items を削除（FK相当の整合性）
+                            ids = [r[0] for r in _conn_d.execute(
+                                "SELECT amazon_order_id FROM orders WHERE substr(purchase_date,1,10) < ?",
+                                (cutoff_iso,)
+                            ).fetchall()]
+                            if ids:
+                                ph = ",".join("?" * len(ids))
+                                _conn_d.execute(
+                                    f"DELETE FROM order_items WHERE amazon_order_id IN ({ph})", ids
+                                )
+                            r = _conn_d.execute(
+                                "DELETE FROM orders WHERE substr(purchase_date,1,10) < ?",
+                                (cutoff_iso,)
+                            )
+                            deleted = r.rowcount
+                        elif target == "price_change_log":
+                            # price_change_log の日時カラム名は created_at（実装による）
+                            # 存在カラムを動的に判別
+                            cols = [c[1] for c in _conn_d.execute(
+                                "PRAGMA table_info(price_change_log)"
+                            ).fetchall()]
+                            date_col = next((c for c in ("created_at", "applied_at",
+                                                         "changed_at", "ts") if c in cols), None)
+                            if not date_col:
+                                flash("price_change_log の日付カラムが特定できません", "danger")
+                                return redirect(url_for("settings"))
+                            r = _conn_d.execute(
+                                f"DELETE FROM price_change_log WHERE substr({date_col},1,10) < ?",
+                                (cutoff_iso,)
+                            )
+                            deleted = r.rowcount
+                        else:
+                            flash("不明な削除対象", "danger")
+                            return redirect(url_for("settings"))
+                        # VACUUM で実ファイルも縮める
+                    with sqlite3.connect(str(config.DB_PATH)) as _vc:
+                        _vc.execute("VACUUM")
+                    flash(f"{target}: {deleted:,}件削除 + VACUUM 完了", "success")
+                except Exception as _ex:
+                    flash(f"削除エラー: {type(_ex).__name__}: {_ex}", "danger")
             return redirect(url_for("settings"))
 
         def mask(v):
@@ -2844,6 +2919,52 @@ def create_app():
             ctx["market_bsr_seeded"] = 0
             ctx["market_bsr_fetched"] = 0
             ctx["market_bsr_last_score"] = ""
+
+        # ----- DBメンテナンス: テーブル別の件数・推定サイズ・2年超データ件数 -----
+        from datetime import date as _d3, timedelta as _td3
+        cutoff_iso2 = (_d3.today() - _td3(days=730)).isoformat()
+        def _table_stats(conn, table, date_col, sample_size=200):
+            """件数・サンプルからの推定総バイト数・2年より古い件数を返す。"""
+            try:
+                total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                if total == 0:
+                    return {"total": 0, "size_mb": 0.0, "old": 0, "cutoff": cutoff_iso2}
+                # サンプル平均行サイズ
+                sample = conn.execute(
+                    f"SELECT * FROM {table} LIMIT {sample_size}"
+                ).fetchall()
+                avg = sum(len(str(tuple(r))) for r in sample) // max(1, len(sample))
+                size_mb = total * avg / 1024 / 1024
+                old = 0
+                if date_col:
+                    old = conn.execute(
+                        f"SELECT COUNT(*) FROM {table} "
+                        f"WHERE substr({date_col},1,10) < ?",
+                        (cutoff_iso2,)
+                    ).fetchone()[0]
+                return {"total": total, "size_mb": round(size_mb, 1),
+                        "old": old, "cutoff": cutoff_iso2}
+            except Exception as _e:
+                return {"total": 0, "size_mb": 0.0, "old": 0,
+                        "cutoff": cutoff_iso2, "error": str(_e)}
+        try:
+            with get_db() as _cd:
+                # price_change_log の日付カラム名を判別
+                _pcl_cols = [c[1] for c in _cd.execute(
+                    "PRAGMA table_info(price_change_log)"
+                ).fetchall()]
+                _pcl_date_col = next((c for c in ("created_at", "applied_at",
+                                                  "changed_at", "ts") if c in _pcl_cols), None)
+                ctx["db_maint"] = {
+                    "financial_events": _table_stats(_cd, "financial_events", "posted_date"),
+                    "orders": _table_stats(_cd, "orders", "purchase_date"),
+                    "order_items": _table_stats(_cd, "order_items", None),
+                    "price_change_log": _table_stats(_cd, "price_change_log", _pcl_date_col),
+                    "cutoff": cutoff_iso2,
+                }
+        except Exception:
+            ctx["db_maint"] = {"cutoff": cutoff_iso2}
+
         return render_template("settings.html", **ctx)
 
     # ==========================================================

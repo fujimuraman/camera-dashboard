@@ -72,14 +72,6 @@ def main():
         # 既存を全削除（旧 Best Sellers ベースの 8,658件を撤廃）
         before = conn.execute("SELECT COUNT(*) FROM market_bsr_meta").fetchone()[0]
         conn.execute("DELETE FROM market_bsr_meta")
-        # market_bsr_history は asin が消えたあとは事実上孤児。サイズ削減のため掃除。
-        try:
-            conn.execute(
-                "DELETE FROM market_bsr_history "
-                "WHERE asin NOT IN (SELECT asin FROM market_bsr_meta)"
-            )
-        except Exception:
-            pass
 
         for r in rows:
             conn.execute(

@@ -8,7 +8,7 @@ import sys
 import traceback
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
 
 # amazon-seller-automation の scripts をパスに追加（sp_api_client 等の流用）
@@ -545,6 +545,9 @@ def sync_keepa_sales(asins: list[str] | None = None, limit: int | None = None,
                             continue
                         by_date[date_str] = rank
                     bsr_history = [{"date": d, "rank": r} for d, r in sorted(by_date.items())]
+                    # 5年カット: スコア計算で使うのは過去5年だけ。それ以前は捨てる（DB肥大化対策）
+                    _cutoff_iso = (date.today() - timedelta(days=1825)).isoformat()
+                    bsr_history = [h for h in bsr_history if h["date"] >= _cutoff_iso]
                     if bsr_history:
                         bsr_current = bsr_history[-1]["rank"]
                 # current 配列からも取得（より新鮮な可能性）
@@ -720,6 +723,9 @@ def sync_market_bsr_one() -> dict:
                 continue
             by_date[date_str] = rank
         bsr_history = [{"date": d, "rank": r} for d, r in sorted(by_date.items())]
+        # 5年カット: スコア計算で使うのは過去5年だけ。それ以前は捨てる（DB肥大化対策）
+        _cutoff_iso = (date.today() - timedelta(days=1825)).isoformat()
+        bsr_history = [h for h in bsr_history if h["date"] >= _cutoff_iso]
         if bsr_history:
             bsr_current = bsr_history[-1]["rank"]
     cur = p.get("current") or []
@@ -739,13 +745,6 @@ def sync_market_bsr_one() -> dict:
             "WHERE asin=?",
             (title, price, bsr_current, bsr_json, now_iso, asin),
         )
-        # history テーブルにも upsert
-        for h in bsr_history[-90:]:  # 直近90日のみ正規化テーブルに反映（参照用）
-            conn.execute(
-                "INSERT OR REPLACE INTO market_bsr_history(asin, date, rank, fetched_at) "
-                "VALUES(?, ?, ?, ?)",
-                (asin, h["date"], h["rank"], now_iso),
-            )
     result["status"] = "ok"
     result["history_points"] = len(bsr_history)
     result["bsr_current"] = bsr_current
@@ -849,10 +848,6 @@ def round_maintenance() -> dict:
                 "DELETE FROM market_bsr_meta WHERE asin = ?",
                 [(a,) for a in remove_asins]
             )
-            conn.executemany(
-                "DELETE FROM market_bsr_history WHERE asin = ?",
-                [(a,) for a in remove_asins]
-            )
 
     set_setting("market_bsr_last_round_at", datetime.now().isoformat())
     return {
@@ -861,6 +856,128 @@ def round_maintenance() -> dict:
         "kept_pending": len(keep_pending_asins),
         "removed_failed": len(bsr_failed),
         "removed_total": len(remove_asins),
+    }
+
+
+def recompute_bsr_daily_cache() -> dict:
+    """bsr_score_daily_cache を全面再計算する（夜間バッチ想定）。
+
+    inventory.bsr_history_json と market_bsr_meta.bsr_history_json から、
+    過去5年分（1825日）の日次中央値を計算し、bsr_score_daily_cache に upsert する。
+    自社在庫と市況の raw を共通の min/max でスケーリング（10〜90）して保存。
+
+    戻り値: {"inventory_days": N, "market_days": N, "elapsed_sec": F}
+    """
+    import json as _json
+    import math as _math
+    import time as _time
+    from datetime import date as _date, timedelta as _td
+
+    t_start = _time.time()
+    cutoff_iso = (_date.today() - _td(days=1825)).isoformat()
+
+    def _aggregate(rows: list) -> dict:
+        """[{date, rank}, ...] のリスト群から、日付 -> その日の中央値リスト を作る。"""
+        day_meds = {}
+        for raw in rows:
+            try:
+                hist = _json.loads(raw or "[]")
+            except Exception:
+                continue
+            asin_by_day = {}
+            for h in hist:
+                d = h.get("date") or ""
+                rank = h.get("rank")
+                if not d or not rank or rank <= 0 or d < cutoff_iso:
+                    continue
+                asin_by_day.setdefault(d[:10], []).append(rank)
+            for d, ranks in asin_by_day.items():
+                if not ranks:
+                    continue
+                med = sorted(ranks)[len(ranks) // 2]
+                day_meds.setdefault(d, []).append(med)
+        return day_meds
+
+    with get_db() as conn:
+        inv_rows = [r["bsr_history_json"] for r in conn.execute(
+            "SELECT bsr_history_json FROM inventory "
+            "WHERE bsr_history_json IS NOT NULL AND bsr_history_json != '[]'"
+        ).fetchall()]
+        mkt_rows = [r["bsr_history_json"] for r in conn.execute(
+            "SELECT bsr_history_json FROM market_bsr_meta "
+            "WHERE bsr_history_json IS NOT NULL AND bsr_history_json != '[]'"
+        ).fetchall()]
+        # market_bsr_meta の中で「自社在庫として保有」しているASIN数（参考情報）
+        # market_bsr_meta は ASIN単位のマスタなので、inventory にもある ASIN を数える
+        try:
+            inv_asin_set = {r["asin"] for r in conn.execute(
+                "SELECT DISTINCT asin FROM inventory WHERE asin IS NOT NULL AND asin != ''"
+            )}
+            mkt_asin_set = {r["asin"] for r in conn.execute(
+                "SELECT asin FROM market_bsr_meta WHERE bsr_history_json IS NOT NULL AND bsr_history_json != '[]'"
+            )}
+            overlap_count = len(inv_asin_set & mkt_asin_set)
+        except Exception:
+            overlap_count = 0
+
+    inv_day_meds = _aggregate(inv_rows)
+    mkt_day_meds = _aggregate(mkt_rows)
+
+    # 日次の global median + raw score
+    def _to_day_score(day_meds: dict) -> dict:
+        out = {}
+        for d, meds in day_meds.items():
+            if not meds:
+                continue
+            s = sorted(meds)
+            gm = s[len(s) // 2]
+            raw = max(0.0, 100.0 - 10.0 * _math.log10(max(1, gm)))
+            out[d] = {"median_bsr": gm, "raw": raw, "asin_count": len(meds)}
+        return out
+
+    inv_day_score = _to_day_score(inv_day_meds)
+    mkt_day_score = _to_day_score(mkt_day_meds)
+
+    # 共通スケーリング（自社在庫と市況の raw を合算して min/max）
+    combined_raws = ([v["raw"] for v in inv_day_score.values()]
+                     + [v["raw"] for v in mkt_day_score.values()])
+    if combined_raws and len(combined_raws) >= 2:
+        rmin, rmax = min(combined_raws), max(combined_raws)
+        span = max(0.01, rmax - rmin)
+        def _scale(raw: float) -> float:
+            return round(max(0.0, min(100.0, 10 + (raw - rmin) / span * 80)), 1)
+    else:
+        def _scale(raw: float) -> float:
+            return round(raw, 1)
+
+    now_iso = datetime.utcnow().isoformat()
+    rows_to_upsert = []
+    for d, v in inv_day_score.items():
+        rows_to_upsert.append((
+            d, "inventory", v["asin_count"], None,
+            v["median_bsr"], v["raw"], _scale(v["raw"]), now_iso,
+        ))
+    for d, v in mkt_day_score.items():
+        rows_to_upsert.append((
+            d, "market", v["asin_count"], overlap_count,
+            v["median_bsr"], v["raw"], _scale(v["raw"]), now_iso,
+        ))
+
+    with get_db() as conn:
+        # 古い cache を一旦削除（5年外れも掃除）してから insert（テーブル小さいので全消し再投入が確実）
+        conn.execute("DELETE FROM bsr_score_daily_cache")
+        conn.executemany(
+            "INSERT INTO bsr_score_daily_cache(date, source, asin_count, has_inventory_count, "
+            "  median_bsr, raw_score, scaled_score, updated_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+            rows_to_upsert,
+        )
+
+    return {
+        "inventory_days": len(inv_day_score),
+        "market_days": len(mkt_day_score),
+        "overlap_asins": overlap_count,
+        "elapsed_sec": round(_time.time() - t_start, 2),
     }
 
 
@@ -1221,11 +1338,10 @@ def sync_financial_events(days: int = 14) -> int:
 
                 conn.execute("""
                     INSERT INTO financial_events(amazon_order_id, event_type, posted_date,
-                                                 fee_type, amount, currency, raw_json)
-                    VALUES(?,?,?,?,?,?,?)
+                                                 fee_type, amount, currency)
+                    VALUES(?,?,?,?,?,?)
                 """, (
                     order_id, "Shipment", posted, "ItemFeeList", fee_total, "JPY",
-                    json.dumps(item, ensure_ascii=False)[:3000],
                 ))
 
         # ----- ServiceFeeEvent (月額サブスクリプション、返品手数料など) -----
@@ -1237,11 +1353,10 @@ def sync_financial_events(days: int = 14) -> int:
                 fee_total += amt
             add_amz(posted, fee_total)
             conn.execute("""
-                INSERT INTO financial_events(event_type, posted_date, fee_type, amount, currency, raw_json)
-                VALUES(?,?,?,?,?,?)
+                INSERT INTO financial_events(event_type, posted_date, fee_type, amount, currency)
+                VALUES(?,?,?,?,?)
             """, ("ServiceFee", posted, ev.get("FeeReason") or "ServiceFee",
-                  fee_total, "JPY",
-                  json.dumps(ev, ensure_ascii=False)[:3000]))
+                  fee_total, "JPY"))
 
         # ----- RemovalShipmentEvent (FBA 取り出し手数料) -----
         for ev in removals:
@@ -1252,11 +1367,10 @@ def sync_financial_events(days: int = 14) -> int:
                 fee_total += amt
             add_amz(posted, fee_total)
             conn.execute("""
-                INSERT INTO financial_events(event_type, posted_date, fee_type, amount, currency, raw_json)
-                VALUES(?,?,?,?,?,?)
+                INSERT INTO financial_events(event_type, posted_date, fee_type, amount, currency)
+                VALUES(?,?,?,?,?)
             """, ("Removal", posted, "RemovalShipment",
-                  fee_total, "JPY",
-                  json.dumps(ev, ensure_ascii=False)[:3000]))
+                  fee_total, "JPY"))
 
         # ----- AdjustmentEvent (返品関連手数料など) -----
         for ev in adjustments:
@@ -1265,10 +1379,9 @@ def sync_financial_events(days: int = 14) -> int:
             amt = abs(float((ev.get("AdjustmentAmount") or {}).get("CurrencyAmount", 0) or 0))
             add_amz(posted, amt)
             conn.execute("""
-                INSERT INTO financial_events(event_type, posted_date, fee_type, amount, currency, raw_json)
-                VALUES(?,?,?,?,?,?)
-            """, ("Adjustment", posted, reason, amt, "JPY",
-                  json.dumps(ev, ensure_ascii=False)[:3000]))
+                INSERT INTO financial_events(event_type, posted_date, fee_type, amount, currency)
+                VALUES(?,?,?,?,?)
+            """, ("Adjustment", posted, reason, amt, "JPY"))
 
         # ----- expenses テーブルへ月次 Amazon利用料を upsert -----
         for ym, total in amz_by_ym.items():
