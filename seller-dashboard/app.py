@@ -2229,7 +2229,7 @@ def create_app():
                 _diag = _conn3.execute(
                     "SELECT COUNT(*) AS c FROM inventory WHERE bsr_history_json IS NOT NULL"
                 ).fetchone()
-                with open(r"C:\claude\seller-dashboard\logs\market_debug.log", "a", encoding="utf-8") as _f:
+                with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
                     _f.write(f"  DB_PATH={_DBP} bsr_rows={len(_bsr_rows)} hist_total={_diag['c']}\n")
                     if _bsr_rows:
                         _sample = _bsr_rows[0] or ""
@@ -2379,14 +2379,14 @@ def create_app():
 
         # DEBUG
         try:
-            with open(r"C:\claude\seller-dashboard\logs\market_debug.log", "a", encoding="utf-8") as _f:
+            with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
                 _f.write(f"{datetime.now().isoformat()} ym_score keys={sorted(ym_score.keys())[-6:]}\n")
                 _f.write(f"  monthly k+score: {[(m['k'], m.get('market_score')) for m in monthly]}\n")
                 _f.write(f"  dbg_cnt: {_dbg_cnt} market_score_by_ym keys={sorted(market_score_by_ym.keys())[-6:]}\n")
                 _f.write(f"  exc_log: {_exc_log}\n")
         except Exception as _e2:
             try:
-                with open(r"C:\claude\seller-dashboard\logs\market_debug.log", "a", encoding="utf-8") as _f:
+                with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
                     _f.write(f"  EXC: {_e2}\n")
             except: pass
 

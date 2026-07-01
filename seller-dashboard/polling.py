@@ -107,8 +107,9 @@ def sync_orders(days: int = 60) -> int:
                         it.get("ConditionId"),
                         it.get("QuantityShipped", 0),
                     ))
-            except SellingApiException:
-                pass
+            except SellingApiException as e:
+                # OrderItems 取得失敗はスキップして他注文を続行するが、原因追跡のためログ出力
+                print(f"[polling.sync_orders] OrderItems failed for {order_id}: {e}", file=sys.stderr)
     return len(all_orders)
 
 
