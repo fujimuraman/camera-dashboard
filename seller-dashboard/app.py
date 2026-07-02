@@ -163,6 +163,13 @@ def _frozen_return_rows(conn, start_date: str, end_date: str, closed_until: str)
     """, (closed_until, start_date, end_date)).fetchall()
 
 
+def _month_end(ym: str) -> str:
+    """'YYYY-MM' → その月の末日 'YYYY-MM-DD'"""
+    import calendar
+    y, m = int(ym[:4]), int(ym[5:7])
+    return f"{ym}-{calendar.monthrange(y, m)[1]:02d}"
+
+
 def _calc_cumulative_profit(year: int, end_month: int) -> float:
     """指定年の 1/1 〜 end_month末 までの当期純利益（簡易計算）"""
     with get_db() as conn:
@@ -286,12 +293,16 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
               AND o.order_status IN ('Shipped','Unshipped')
         """, (cu, cu, start_d, end_d)).fetchall()
 
-        sales = cost = amz_fee_calc = ship_inc = promo = qty = 0
+        # 返品計算モード: 他画面（累計利益・売上分析）と同じく設定に従う
+        rm = get_setting("profit_return_model", "exclude")
+        sales = cost = amz_fee_calc = ship_inc = promo = qty = refund = 0
         for r in rows:
-            if r["return_id"]:
-                continue  # excludeモード
             q = r["quantity_ordered"] or 0
             p = r["item_price"] or 0
+            if r["return_id"]:
+                refund += p * q
+                if rm == "exclude":
+                    continue
             sales += p * q
             cost  += (r["cost_price"] or 0) * q
             ship_inc += r["shipping_price"] or 0
@@ -303,6 +314,8 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
                 title = r["title"] or ""
                 rate = estimate_amazon_fee_rate(title, None)
                 amz_fee_calc += round(p * rate) * q
+        # subtract_refund モード時は返金額を純利益から控除（累計利益と同式）
+        refund_ded = refund if rm == "subtract_refund" else 0
 
         # 年度確定済み期間の注文への返品を、返品日基準で当月に調整計上
         for fr in _frozen_return_rows(conn, start_d, end_d, cu):
@@ -312,7 +325,6 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
 
         # 経費（その月分）
         amz_fee_exp = 0
-        ship_other = 0
         other_exp_by_tc = {}
         non_op = 0
         for r in conn.execute(
@@ -329,7 +341,6 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
                 non_op += amt
                 continue
             elif cat == "発送代行その他":
-                ship_other += amt
                 tc = tc or "荷造運賃"
             if tc and amt:
                 other_exp_by_tc[tc] = other_exp_by_tc.get(tc, 0) + amt
@@ -362,7 +373,7 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
     net_sales = gross_sales - promo
     gross_profit = net_sales - cost
     op_profit = gross_profit - sga_total
-    net_profit = op_profit + non_op
+    net_profit = op_profit + non_op - refund_ded
 
     return {
         "ym": ym,
@@ -379,6 +390,7 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
         "sga_total": sga_total,
         "op_profit": op_profit,
         "non_op": non_op,
+        "refund_ded": refund_ded,
         "net_profit": net_profit,
     }
 
@@ -741,7 +753,7 @@ def _start_scheduler(app):
 # ==========================================================
 def _dashboard_kpi(conn, today, ym, cu):
     """当月の売上・販売数・仕入・利益 KPI（stats dict）と直近30日返品数を集計。
-    戻り値: (stats, returns_count, ship_total)"""
+    戻り値: (stats, returns_count, ship_total, other)  ※other=当月のその他経費"""
     # 今月の売上・販売数・仕入・利益（プライスター方式 / 売上分析と同じ式）
     # Pending用に inventory.listing_price も取得（item_price が NULL/0 のときの推定価格）
     stats_rows = conn.execute(f"""
@@ -794,7 +806,7 @@ def _dashboard_kpi(conn, today, ym, cu):
             rate = estimate_amazon_fee_rate(r["title"] or "", None)
             amz_fee += round(p * rate) * q
     # 年度確定済み期間の注文への返品を、返品日基準で当月に調整計上
-    for fr in _frozen_return_rows(conn, ym + "-01", ym + "-31", cu):
+    for fr in _frozen_return_rows(conn, ym + "-01", _month_end(ym), cu):
         fq = fr["quantity_ordered"] or 0
         sales_total -= (fr["item_price"] or 0) * fq
         cost_total -= (fr["cost_price"] or 0) * fq
@@ -845,11 +857,12 @@ def _dashboard_kpi(conn, today, ym, cu):
     returns_count = conn.execute(
         "SELECT COUNT(*) AS c FROM returns WHERE return_date > date('now', '-30 days')"
     ).fetchone()["c"]
-    return stats, returns_count, ship_total
+    return stats, returns_count, ship_total, other
 
 
-def _dashboard_daily_series(conn, today, ym, cu, target_dt, ship_total, rm):
+def _dashboard_daily_series(conn, today, ym, cu, target_dt, ship_total, rm, other):
     """対象月の日別売上/利益＋累計線（this_month）を構築。
+    other は _dashboard_kpi で取得済みの当月その他経費（再クエリしない）。
     戻り値: (this_month, first)  ※first=対象月の1日（前月参考線の起点に使う）"""
     # 対象月の日別売上＋利益（全日付で 0 埋め、累計線用）
     now = target_dt
@@ -901,17 +914,12 @@ def _dashboard_daily_series(conn, today, ym, cu, target_dt, ship_total, rm):
         if is_ret:
             b["refund"] += p * q
     # 年度確定済み期間の注文への返品を、返品日の日別バケットに調整計上
-    for fr in _frozen_return_rows(conn, ym + "-01", ym + "-31", cu):
+    for fr in _frozen_return_rows(conn, ym + "-01", _month_end(ym), cu):
         fq = fr["quantity_ordered"] or 0
         b = by_day_agg.setdefault(fr["return_date"], {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
         b["sales"] -= (fr["item_price"] or 0) * fq
         b["cost"] -= (fr["cost_price"] or 0) * fq
-    # 固定費（発送代行・その他経費）は日割りで按分
-    other = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM expenses "
-        "WHERE year_month=? AND category NOT IN ('Amazon利用料','プラス計上')",
-        (ym,),
-    ).fetchone()[0] or 0
+    # 固定費（発送代行・その他経費）は日割りで按分（other は _dashboard_kpi で取得済み）
     # 固定費（ship_total + other）を月の総日数で日割り按分。
     # 累計利益は「その日までに実際に発生した固定費」だけを引く（実測値）ため、
     # 月途中では KPI 利益（full ship_total を引く想定）と一致しない。
@@ -966,13 +974,11 @@ def _dashboard_prev_month_series(conn, cu, first, rm):
         JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
         LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
             {FROZEN_RETURNS_JOIN_COND}
-        WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+        WHERE o.order_status IN ('Shipped', 'Unshipped')
           AND substr(o.purchase_date, 1, 7) = ?
     """, (cu, cu, prev_ym)).fetchall()
     prev_by_day = {}
     for row in prev_daily_rows:
-        if row["order_status"] == "Pending":
-            continue
         is_ret = bool(row["return_id"])
         if is_ret and rm == "exclude":
             continue
@@ -1149,14 +1155,6 @@ def _analytics_kpi_rows(start_date, end_date):
         # 年度確定済み期間の注文への返品（返品日が期間内）→ 調整計上用
         frozen_adj_rows = _frozen_return_rows(conn, start_date, end_date, cu)
 
-        # 発送代行手数料: per_item は注文画面・在庫画面の表示用に「最新値」を1つ取得
-        ship_row = conn.execute(
-            "SELECT per_item_fee, base_fee FROM shipping_agent_fees "
-            "ORDER BY effective_from DESC LIMIT 1"
-        ).fetchone()
-        ship_per_item = (ship_row["per_item_fee"] if ship_row else 0) or 0
-        ship_base     = (ship_row["base_fee"] if ship_row else 0) or 0
-
         # 期間に含まれる year-month の expenses 合計
         # 月を計算
         ym_set = set()
@@ -1239,14 +1237,6 @@ def _analytics_kpi_rows(start_date, end_date):
         # 仕入れ台帳依存(sale_flag/sale_date)を使った推奨計算は廃止。
         # 代わりに「Web内の B/S データだけから算出される期末差額（使途不明金）」を
         # Amazon未上場在庫の推奨値として表示する（_build_bs 後に計算）。
-
-        # 返金: returns テーブルの数量
-        refund_rows = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM returns r "
-            "WHERE substr(r.return_date, 1, 10) BETWEEN ? AND ?",
-            params,
-        ).fetchone()
-        refund_cnt = refund_rows["cnt"] if refund_rows else 0
     return {
         "rows": rows, "frozen_adj_rows": frozen_adj_rows, "cu": cu,
         "ym_set": ym_set, "ship_total": ship_total,
@@ -1315,8 +1305,7 @@ def _aggregate_order_rows(rows, frozen_adj_rows, return_model, start_date, end_d
             month_key = pd_str[:7]
             try:
                 dt = datetime.strptime(pd_str[:19], "%Y-%m-%dT%H:%M:%S")
-                dow_key = str(dt.weekday())  # 0=月 ... 6=日（ISO）
-                # SQLiteの strftime('%w') は 0=日曜 なので揃える
+                # 曜日キーは SQLite strftime('%w') に合わせて 0=日曜 起点
                 dow_key = str((dt.weekday() + 1) % 7)
                 hour_key = dt.strftime("%H")
             except Exception:
@@ -1459,14 +1448,12 @@ def _build_daily_series(by_day, chart_daily_start, chart_daily_end, per_day_exp,
             JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
             LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
                 {FROZEN_RETURNS_JOIN_COND}
-            WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+            WHERE o.order_status IN ('Shipped', 'Unshipped')
               AND substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
         """, (cu, cu, prev_start_date, prev_end_date)).fetchall()
     prev_by_day = {}
     prev_by_month = {}
     for _r in _prev_rows:
-        if _r["order_status"] == "Pending":
-            continue
         if return_model == "exclude" and _r["return_id"]:
             continue
         _q = _r["quantity_ordered"] or 0
@@ -1533,11 +1520,20 @@ def _build_monthly_series(preset, sd, by_month, ym_set, other_exp,
     else:
         month_keys = sorted(by_month.keys())
     monthly = []
-    # other_exp は月数で均等割り（preset=year で 12月分）
-    other_exp_per_month = other_exp / max(1, len(ym_set))
+    # other_exp は「未来でない月」の数で均等割り。
+    # 未来月に按分すると preset=year で未来月に負の利益バーが出て、
+    # 実データ月の合計も KPI 利益とズレるため、未来月は按分対象外＋利益 null にする
+    now_ym = datetime.now().strftime("%Y-%m")
+    non_future_keys = [k for k in month_keys if k <= now_ym]
+    other_exp_per_month = other_exp / max(1, len(non_future_keys))
     cum_profit_running_m = 0
     for k in month_keys:
         b = by_month.get(k, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
+        if k > now_ym:
+            # 未来月: 経費を按分せず利益も描画しない（横軸だけ確保）
+            monthly.append({"k": k, "sales": b["sales"], "qty": b["qty"],
+                            "profit": None, "cum_profit": None})
+            continue
         # その月の ship_total（base + per_item × その月のASIN登録数）+ その月の other_exp
         # KPI と同じ式で月毎に引くことで合計が KPI 利益と一致する
         m_ship = ship_total_by_ym.get(k, 0)
@@ -1680,7 +1676,6 @@ def _market_score_section(daily, monthly, chart_daily_start):
     else:
         for _ym, v in ym_score.items():
             v["score"] = round(v["raw"], 1)
-    _cutoff_day_iso = (_today - timedelta(days=1825)).isoformat()
     # monthly に market_score / market_bsr を埋める
     for m in monthly:
         ks = ym_score.get(m["k"])
@@ -2076,10 +2071,10 @@ def create_app():
         ym = target_dt.strftime("%Y-%m")
         with get_db() as conn:
             cu = _get_closed_until()
-            stats, returns_count, ship_total = _dashboard_kpi(conn, today, ym, cu)
+            stats, returns_count, ship_total, other = _dashboard_kpi(conn, today, ym, cu)
             rm = get_setting("profit_return_model", "exclude")
             this_month, first = _dashboard_daily_series(
-                conn, today, ym, cu, target_dt, ship_total, rm)
+                conn, today, ym, cu, target_dt, ship_total, rm, other)
             prev_month, prev_first = _dashboard_prev_month_series(conn, cu, first, rm)
             recent_sold = _dashboard_recent_sold(conn)
 
