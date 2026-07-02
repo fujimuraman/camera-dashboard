@@ -735,6 +735,1189 @@ def _start_scheduler(app):
     app.scheduler = scheduler
 
 
+# ==========================================================
+# ダッシュボード用ヘルパー（dashboard ルートから抽出。
+# Flask リクエストコンテキストには依存しない）
+# ==========================================================
+def _dashboard_kpi(conn, today, ym, cu):
+    """当月の売上・販売数・仕入・利益 KPI（stats dict）と直近30日返品数を集計。
+    戻り値: (stats, returns_count, ship_total)"""
+    # 今月の売上・販売数・仕入・利益（プライスター方式 / 売上分析と同じ式）
+    # Pending用に inventory.listing_price も取得（item_price が NULL/0 のときの推定価格）
+    stats_rows = conn.execute(f"""
+        SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
+               oi.shipping_price, oi.promotion_discount,
+               oi.title, cp.cost_price, r.id AS return_id, o.order_status,
+               inv.listing_price AS listing_price
+        FROM orders o
+        JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+        LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
+        LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
+        LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+            {FROZEN_RETURNS_JOIN_COND}
+        WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+          AND substr(o.purchase_date, 1, 7) = substr(?, 1, 7)
+    """, (cu, cu, today)).fetchall()
+    # 返品計算モード: exclude=返品を集計から除外（再出品で在庫に戻る想定）
+    #                   subtract_refund=プライスター方式（総計から返金額控除）
+    return_model = get_setting("profit_return_model", "exclude")
+    qty_total = sales_total = cost_total = amz_fee = refund_amt = 0
+    shipping_income = 0  # 売上分析と同じ式に揃える: 送料・ギフト入金
+    promotion_total = 0  # プロモーション割引（控除）
+    return_count = 0
+    pending_qty = 0
+    pending_sales = 0  # 価格分かる Pending 分のみ加算（参考値）
+    for r in stats_rows:
+        q = r["quantity_ordered"] or 0
+        p = r["item_price"] or 0
+        # Pending 注文（金額未確定、キャンセル可能性あり）は本集計対象外
+        # ただし「保留中の販売」KPI には別途集計（item_price が NULL/0 なら listing_price で補完）
+        if r["order_status"] == "Pending":
+            pending_qty += q
+            p_pending = p if p else (r["listing_price"] or 0)
+            pending_sales += p_pending * q
+            continue
+        is_return = bool(r["return_id"])
+        if is_return:
+            return_count += 1
+            if return_model == "exclude":
+                continue  # 完全除外
+            refund_amt += p * q
+        qty_total += q
+        sales_total += p * q
+        cost_total += (r["cost_price"] or 0) * q
+        shipping_income += r["shipping_price"] or 0
+        promotion_total += r["promotion_discount"] or 0
+        if r["amazon_fee_confirmed"] and r["amazon_fee"]:
+            amz_fee += r["amazon_fee"]
+        else:
+            rate = estimate_amazon_fee_rate(r["title"] or "", None)
+            amz_fee += round(p * rate) * q
+    # 年度確定済み期間の注文への返品を、返品日基準で当月に調整計上
+    for fr in _frozen_return_rows(conn, ym + "-01", ym + "-31", cu):
+        fq = fr["quantity_ordered"] or 0
+        sales_total -= (fr["item_price"] or 0) * fq
+        cost_total -= (fr["cost_price"] or 0) * fq
+        return_count += 1
+    # 売上分析と同じ式に揃える:
+    # - other:   Amazon利用料・プラス計上を除く経費
+    # - amz_fee_from_expense: Amazon利用料（FBA保管料・サブスク等の月次経費）
+    other = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM expenses "
+        "WHERE year_month=? AND category NOT IN ('Amazon利用料','プラス計上')",
+        (ym,),
+    ).fetchone()[0] or 0
+    amz_fee_from_expense = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM expenses "
+        "WHERE year_month=? AND category='Amazon利用料'",
+        (ym,),
+    ).fetchone()[0] or 0
+    # 発送代行: 売上分析と同じく「base + per_item × その月の ASIN 登録数」
+    ship_row = conn.execute(
+        "SELECT base_fee, per_item_fee FROM shipping_agent_fees "
+        "WHERE effective_from <= ? ORDER BY effective_from DESC LIMIT 1",
+        (ym + "-01",),
+    ).fetchone()
+    ship_base_val = ((ship_row["base_fee"] if ship_row else 0) or 0)
+    ship_per_val = ((ship_row["per_item_fee"] if ship_row else 0) or 0)
+    ym_slash = ym.replace("-", "/")
+    asin_registered_in_month = conn.execute(
+        "SELECT COUNT(*) FROM inventory "
+        "WHERE substr(asin_listed_at, 1, 7) = ?",
+        (ym_slash,),
+    ).fetchone()[0] or 0
+    ship_total = ship_base_val + ship_per_val * asin_registered_in_month
+    # 売上分析と同じ式: 売上 + 送料 − 仕入 − Amazon手数料 − 経費 − 発送代行 − プロモ − 返金
+    amz_fee_total = amz_fee + amz_fee_from_expense
+    profit = (sales_total + shipping_income
+              - cost_total - amz_fee_total - other - ship_total
+              - promotion_total - refund_amt)
+    # 現在の在庫数（Active かつ qty>0 の SKU 数 ＝ 出品中商品数）
+    inventory_count = conn.execute("""
+        SELECT COUNT(*) AS c FROM inventory
+        WHERE status LIKE 'Active%' AND quantity > 0
+    """).fetchone()["c"]
+    stats = {"sales_total": sales_total, "qty_total": qty_total,
+             "cost_total": cost_total, "profit": profit,
+             "inventory_count": inventory_count,
+             "pending_qty": pending_qty, "pending_sales": pending_sales}
+
+    returns_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM returns WHERE return_date > date('now', '-30 days')"
+    ).fetchone()["c"]
+    return stats, returns_count, ship_total
+
+
+def _dashboard_daily_series(conn, today, ym, cu, target_dt, ship_total, rm):
+    """対象月の日別売上/利益＋累計線（this_month）を構築。
+    戻り値: (this_month, first)  ※first=対象月の1日（前月参考線の起点に使う）"""
+    # 対象月の日別売上＋利益（全日付で 0 埋め、累計線用）
+    now = target_dt
+    first = now.replace(day=1)
+    if now.month == 12:
+        next_first = now.replace(year=now.year + 1, month=1, day=1)
+    else:
+        next_first = now.replace(month=now.month + 1, day=1)
+    days_in_month = (next_first - first).days
+
+    # 日別の売上・仕入・手数料・数量を集計（返品は return_model に従う、Pending は除外）
+    daily_rows = conn.execute(f"""
+        SELECT substr(o.purchase_date, 1, 10) AS day,
+               oi.item_price, oi.quantity_ordered,
+               oi.amazon_fee, oi.amazon_fee_confirmed, oi.title,
+               oi.shipping_price, oi.promotion_discount,
+               cp.cost_price, r.id AS return_id, o.order_status
+        FROM orders o
+        JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+        LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
+        LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+            {FROZEN_RETURNS_JOIN_COND}
+        WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+          AND substr(o.purchase_date, 1, 7) = substr(?, 1, 7)
+    """, (cu, cu, today)).fetchall()
+    by_day_agg = {}  # day -> {sales, qty, cost, fee}
+    for row in daily_rows:
+        day = row["day"]
+        # Pending は売価未確定のため集計外
+        if row["order_status"] == "Pending":
+            continue
+        is_ret = bool(row["return_id"])
+        if is_ret and rm == "exclude":
+            continue
+        q = row["quantity_ordered"] or 0
+        p = row["item_price"] or 0
+        if row["amazon_fee_confirmed"] and row["amazon_fee"]:
+            fee = row["amazon_fee"]
+        else:
+            rate = estimate_amazon_fee_rate(row["title"] or "", None)
+            fee = round(p * rate) * q
+        b = by_day_agg.setdefault(day, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
+        b["sales"]   += p * q
+        b["qty"]     += q
+        b["cost"]    += (row["cost_price"] or 0) * q
+        b["fee"]     += fee
+        b["ship_in"] += row["shipping_price"] or 0
+        b["promo"]   += row["promotion_discount"] or 0
+        if is_ret:
+            b["refund"] += p * q
+    # 年度確定済み期間の注文への返品を、返品日の日別バケットに調整計上
+    for fr in _frozen_return_rows(conn, ym + "-01", ym + "-31", cu):
+        fq = fr["quantity_ordered"] or 0
+        b = by_day_agg.setdefault(fr["return_date"], {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
+        b["sales"] -= (fr["item_price"] or 0) * fq
+        b["cost"] -= (fr["cost_price"] or 0) * fq
+    # 固定費（発送代行・その他経費）は日割りで按分
+    other = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) FROM expenses "
+        "WHERE year_month=? AND category NOT IN ('Amazon利用料','プラス計上')",
+        (ym,),
+    ).fetchone()[0] or 0
+    # 固定費（ship_total + other）を月の総日数で日割り按分。
+    # 累計利益は「その日までに実際に発生した固定費」だけを引く（実測値）ため、
+    # 月途中では KPI 利益（full ship_total を引く想定）と一致しない。
+    # 月末日まで進めば自然に一致する。
+    per_day_fixed = (ship_total + other) / days_in_month
+
+    this_month = []
+    cum_sales = 0
+    cum_profit = 0
+    today_iso_dash = datetime.now().date().isoformat()
+    for d in range(1, days_in_month + 1):
+        day_iso = first.replace(day=d).strftime("%Y-%m-%d")
+        b = by_day_agg.get(day_iso, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
+        refund_deduction = b["refund"] if rm == "subtract_refund" else 0
+        if day_iso > today_iso_dash:
+            # 未来日: 固定費按分も引かない → 累計利益が水平延長
+            day_profit = 0
+        else:
+            # 売上分析と同じ式: + 送料、− プロモ。
+            # 発送代行は ship_total を per_day_fixed で日割り（per_item × qty は撤廃）。
+            day_profit = (b["sales"] + b["ship_in"]
+                          - b["cost"] - b["fee"]
+                          - per_day_fixed
+                          - b["promo"] - refund_deduction)
+        cum_sales  += b["sales"]
+        cum_profit += day_profit
+        # 累計売上・累計利益は実データがある日（売上 or 販売数 > 0）のみ表示。
+        # 未来日およびデータ無い日は null（プロット飛ばし。点同士は線で結ぶ）。
+        has_data = b["sales"] > 0 or b["qty"] > 0
+        this_month.append({
+            "day": day_iso, "d": d,
+            "sales": b["sales"], "qty": b["qty"],
+            "profit": round(day_profit),
+            "cum": cum_sales if has_data else None,
+            "cum_profit": round(cum_profit) if has_data else None,
+        })
+    return this_month, first
+
+
+def _dashboard_prev_month_series(conn, cu, first, rm):
+    """前月の日別累計売上（モチベ比較用の参考線）を構築。
+    戻り値: (prev_month, prev_first)"""
+    # ---- 前月の日別累計売上（モチベ比較用、当月チャートに重ねる）----
+    prev_last = first - timedelta(days=1)
+    prev_first = prev_last.replace(day=1)
+    days_in_prev = (first - prev_first).days
+    prev_ym = prev_first.strftime("%Y-%m")
+    prev_daily_rows = conn.execute(f"""
+        SELECT substr(o.purchase_date, 1, 10) AS day,
+               oi.item_price, oi.quantity_ordered, r.id AS return_id, o.order_status
+        FROM orders o
+        JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+        LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+            {FROZEN_RETURNS_JOIN_COND}
+        WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+          AND substr(o.purchase_date, 1, 7) = ?
+    """, (cu, cu, prev_ym)).fetchall()
+    prev_by_day = {}
+    for row in prev_daily_rows:
+        if row["order_status"] == "Pending":
+            continue
+        is_ret = bool(row["return_id"])
+        if is_ret and rm == "exclude":
+            continue
+        q = row["quantity_ordered"] or 0
+        p = row["item_price"] or 0
+        day = row["day"]
+        b = prev_by_day.setdefault(day, {"sales": 0})
+        b["sales"] += p * q
+    prev_month = []
+    prev_cum = 0
+    for d in range(1, days_in_prev + 1):
+        day_iso = prev_first.replace(day=d).strftime("%Y-%m-%d")
+        b = prev_by_day.get(day_iso, {"sales": 0})
+        prev_cum += b["sales"]
+        prev_month.append({"d": d, "cum": prev_cum})
+    return prev_month, prev_first
+
+
+def _dashboard_recent_sold(conn):
+    """最新の売れた商品10件（推定利益付き）を構築。"""
+    # 最新の売れた商品10件（Pendingは item_price が NULL/0 の場合 inventory.listing_price で補完）
+    # 利益も推定値で算出: 売価 - 仕入 - Amazon手数料 - 発送代行(per_item)
+    _recent_rows = conn.execute("""
+        SELECT o.purchase_date, oi.title, oi.seller_sku,
+               oi.item_price, oi.quantity_ordered,
+               oi.amazon_fee, oi.amazon_fee_confirmed,
+               oi.shipping_price, oi.promotion_discount,
+               cp.cost_price,
+               inv.listing_price AS listing_price,
+               o.order_status
+        FROM orders o
+        JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+        LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
+        LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
+        WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+        ORDER BY o.purchase_date DESC LIMIT 10
+    """).fetchall()
+    # per_item 発送代行手数料（最新の設定値）
+    _ship_row = conn.execute(
+        "SELECT per_item_fee FROM shipping_agent_fees ORDER BY effective_from DESC LIMIT 1"
+    ).fetchone()
+    _ship_per = ((_ship_row["per_item_fee"] if _ship_row else 0) or 0)
+
+    recent_sold = []
+    for r in _recent_rows:
+        price = r["item_price"] or 0
+        qty = r["quantity_ordered"] or 1
+        # Pending で価格未確定なら listing_price で推定
+        price_est = price == 0 or r["item_price"] is None
+        if price_est:
+            price = r["listing_price"] or 0
+        # Amazon 手数料: 確定値があればそれ、無ければレート推定
+        if r["amazon_fee_confirmed"] and r["amazon_fee"]:
+            fee = r["amazon_fee"]
+        else:
+            rate = estimate_amazon_fee_rate(r["title"] or "", None)
+            fee = round(price * rate) * qty
+        cost = (r["cost_price"] or 0) * qty
+        ship_in = r["shipping_price"] or 0
+        promo = r["promotion_discount"] or 0
+        profit_est = (price * qty + ship_in) - cost - fee - (_ship_per * qty) - promo
+        recent_sold.append({
+            "purchase_date": r["purchase_date"],
+            "seller_sku": r["seller_sku"],
+            "title": r["title"],
+            "item_price": price,
+            "price_estimated": price_est,
+            "order_status": r["order_status"],
+            "profit_est": int(round(profit_est)),
+            # 仕入が登録されていない or 0 の場合は利益推定の信頼度が低い
+            "profit_unreliable": (r["cost_price"] or 0) == 0,
+        })
+    return recent_sold
+
+
+# ==========================================================
+# 売上分析/決算用ヘルパー（analytics ルートから抽出。
+# Flask リクエストコンテキストには依存しない）
+# ==========================================================
+def _parse_analytics_period(args, now):
+    """期間パラメータ解釈（preset/tab/開始終了日/前同期間/グラフ横軸範囲）。
+    args には request.args を渡す。"""
+    preset = args.get("preset", "this")
+    # アクティブタブの保持（期間変更してもタブが維持されるように）
+    tab = args.get("tab")
+    if tab not in ("monthly", "daily", "dow", "hour"):
+        # 未指定: 年間 → 月別、それ以外 → 日別
+        tab = "monthly" if preset == "year" else "daily"
+    if preset == "prev":
+        first_this = now.replace(day=1)
+        prev_last  = first_this - timedelta(days=1)
+        start_date = prev_last.replace(day=1).strftime("%Y-%m-%d")
+        end_date   = prev_last.strftime("%Y-%m-%d")
+    elif preset == "year":
+        # 当年: 1月1日〜今日（月別グラフで12ヶ月分の棒が出る）
+        start_date = now.replace(month=1, day=1).strftime("%Y-%m-%d")
+        end_date   = now.strftime("%Y-%m-%d")
+    elif preset == "custom":
+        start_date = args.get("from") or now.replace(day=1).strftime("%Y-%m-%d")
+        end_date   = args.get("to")   or now.strftime("%Y-%m-%d")
+    else:  # this
+        start_date = now.replace(day=1).strftime("%Y-%m-%d")
+        end_date   = now.strftime("%Y-%m-%d")
+
+    # ----- 前同期間（モチベ比較用、累計売上線に重ねる）-----
+    # this  → 前月 / prev → 前々月 / year → 前年 / custom → 同じ期間長の直前
+    from datetime import date as _date
+    _sd = _date.fromisoformat(start_date)
+    _ed = _date.fromisoformat(end_date)
+    if preset == "this":
+        _prev_first = (_sd - timedelta(days=1)).replace(day=1)
+        _prev_end = _sd - timedelta(days=1)
+        prev_label = _prev_first.strftime("%Y年%m月").replace("年0", "年")
+    elif preset == "prev":
+        _prev_first = (_sd - timedelta(days=1)).replace(day=1)
+        _prev_end = _sd - timedelta(days=1)
+        prev_label = _prev_first.strftime("%Y年%m月").replace("年0", "年")
+    elif preset == "year":
+        _prev_first = _sd.replace(year=_sd.year - 1)
+        _prev_end = _ed.replace(year=_ed.year - 1)
+        prev_label = f"{_sd.year - 1}年"
+    else:  # custom
+        _len = (_ed - _sd).days + 1
+        _prev_end = _sd - timedelta(days=1)
+        _prev_first = _prev_end - timedelta(days=_len - 1)
+        prev_label = f"{_prev_first} 〜 {_prev_end}"
+    prev_start_date = _prev_first.strftime("%Y-%m-%d")
+    prev_end_date = _prev_end.strftime("%Y-%m-%d")
+
+    # ----- グラフ表示用の横軸範囲（データ集計範囲とは別） -----
+    # 要件: 当月日別は1日〜月末日、年間月別は1〜12月、その他はデータ範囲どおり
+    # （未来日もラベルは表示するが値は0で埋まる）
+    from calendar import monthrange as _monthrange
+    if preset == "this":
+        # 当月日別: 月初〜月末日
+        chart_daily_start = _sd  # 月初（既に day=1）
+        _last_day = _monthrange(_sd.year, _sd.month)[1]
+        chart_daily_end = _sd.replace(day=_last_day)
+    else:
+        # prev/year/custom はデータ範囲をそのまま（prev は元から月末まで）
+        chart_daily_start = _sd
+        chart_daily_end = _ed
+    return {
+        "preset": preset, "tab": tab,
+        "start_date": start_date, "end_date": end_date,
+        "prev_start_date": prev_start_date, "prev_end_date": prev_end_date,
+        "prev_label": prev_label, "sd": _sd,
+        "chart_daily_start": chart_daily_start, "chart_daily_end": chart_daily_end,
+    }
+
+
+def _analytics_kpi_rows(start_date, end_date):
+    """KPI 素データ取得＋経費・発送代行・棚卸資産の集計。"""
+    with get_db() as conn:
+        # （日別/月別/曜日別/時間帯別のデータは下部で Python 集計するため SQL グループは不要）
+        params = (start_date, end_date)
+
+        # KPI の素データ（Pending は価格未確定のため除外、Unshipped は含める）
+        cu = _get_closed_until()
+        rows = conn.execute(f"""
+            SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
+                   oi.title, oi.shipping_price, oi.promotion_discount,
+                   cp.cost_price, r.id AS return_id,
+                   o.purchase_date, o.order_status
+            FROM orders o
+            JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+            LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
+            LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                {FROZEN_RETURNS_JOIN_COND}
+            WHERE substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
+              AND o.order_status IN ('Shipped', 'Unshipped')
+        """, (cu, cu) + params).fetchall()
+
+        # 年度確定済み期間の注文への返品（返品日が期間内）→ 調整計上用
+        frozen_adj_rows = _frozen_return_rows(conn, start_date, end_date, cu)
+
+        # 発送代行手数料: per_item は注文画面・在庫画面の表示用に「最新値」を1つ取得
+        ship_row = conn.execute(
+            "SELECT per_item_fee, base_fee FROM shipping_agent_fees "
+            "ORDER BY effective_from DESC LIMIT 1"
+        ).fetchone()
+        ship_per_item = (ship_row["per_item_fee"] if ship_row else 0) or 0
+        ship_base     = (ship_row["base_fee"] if ship_row else 0) or 0
+
+        # 期間に含まれる year-month の expenses 合計
+        # 月を計算
+        ym_set = set()
+        cur = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        while cur <= end:
+            ym_set.add(cur.strftime("%Y-%m"))
+            # 次の月へ
+            y, m = cur.year, cur.month
+            cur = cur.replace(year=(y+1 if m == 12 else y), month=(1 if m == 12 else m+1), day=1)
+
+        # 月別の shipping_agent_fees（base_fee, per_item_fee）と
+        # 月別の ASIN登録数（販売済み含む全SKU）を取得して
+        # ship_total = Σ (base + per_item × ASIN登録数_in_month)
+        # ※注: 注文画面の per-order 代行手数料は最新の per_item_fee 単一値を使用
+        # ship_total_by_ym: 月別グラフで月毎の発送代行を引くために保持
+        ship_total = 0
+        ship_total_by_ym = {}
+        for ym in sorted(ym_set):
+            # その月有効の base_fee, per_item_fee（effective_from <= 月初）
+            eff = ym + "-01"
+            sa = conn.execute(
+                "SELECT base_fee, per_item_fee FROM shipping_agent_fees "
+                "WHERE effective_from <= ? ORDER BY effective_from DESC LIMIT 1",
+                (eff,)
+            ).fetchone()
+            m_base = (sa["base_fee"] if sa else 0) or 0
+            m_per  = (sa["per_item_fee"] if sa else 0) or 0
+            # その月にASIN登録された全SKU数（Active+Inactive）
+            ym_slash = ym.replace("-", "/")
+            arow = conn.execute(
+                "SELECT COUNT(*) AS n FROM inventory "
+                "WHERE substr(asin_listed_at,1,7)=?",
+                (ym_slash,)
+            ).fetchone()
+            m_asin = (arow["n"] if arow else 0) or 0
+            m_ship_total = m_base + m_per * m_asin
+            ship_total_by_ym[ym] = m_ship_total
+            ship_total += m_ship_total
+
+        other_exp = 0
+        amz_fee_from_expense = 0
+        non_op_income = 0  # 営業外収益（プラス計上）
+        tax_cat_breakdown = {}  # 費目別合計（確定申告用）
+        if ym_set:
+            placeholders = ",".join(["?"] * len(ym_set))
+            exp_rows = conn.execute(
+                f"SELECT category, tax_category, SUM(amount) AS total FROM expenses "
+                f"WHERE year_month IN ({placeholders}) GROUP BY category, tax_category",
+                tuple(ym_set),
+            ).fetchall()
+            for er in exp_rows:
+                amt = er["total"] or 0
+                if er["category"] == "Amazon利用料":
+                    amz_fee_from_expense += amt
+                elif er["category"] == "プラス計上":
+                    non_op_income += amt
+                else:
+                    other_exp += amt
+                # 費目別集計（プラス計上は除外、自動Amazon利用料は支払手数料に含める）
+                tc = er["tax_category"]
+                if not tc and er["category"] == "Amazon利用料":
+                    tc = "支払手数料"
+                # 注: 負の値も含める（割引調整など。プラス計上のみ別経路）
+                if tc and amt and er["category"] != "プラス計上":
+                    tax_cat_breakdown[tc] = tax_cat_breakdown.get(tc, 0) + amt
+
+        # 棚卸資産（自動）: Amazon Active 在庫のみ評価。
+        # Amazon にまだ上場していない物理在庫は B/S の「Amazon未上場在庫」欄
+        # （ユーザー手入力）で別途管理する。
+        inv_value_row = conn.execute("""
+            SELECT COALESCE(SUM(cp.cost_price * inv.quantity), 0) AS val
+            FROM inventory inv
+            LEFT JOIN cost_prices cp ON cp.seller_sku = inv.seller_sku
+            WHERE inv.status LIKE 'Active%' AND inv.quantity > 0
+              AND cp.cost_price > 0
+        """).fetchone()
+        inventory_value = inv_value_row["val"] if inv_value_row else 0
+
+        # 仕入れ台帳依存(sale_flag/sale_date)を使った推奨計算は廃止。
+        # 代わりに「Web内の B/S データだけから算出される期末差額（使途不明金）」を
+        # Amazon未上場在庫の推奨値として表示する（_build_bs 後に計算）。
+
+        # 返金: returns テーブルの数量
+        refund_rows = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM returns r "
+            "WHERE substr(r.return_date, 1, 10) BETWEEN ? AND ?",
+            params,
+        ).fetchone()
+        refund_cnt = refund_rows["cnt"] if refund_rows else 0
+    return {
+        "rows": rows, "frozen_adj_rows": frozen_adj_rows, "cu": cu,
+        "ym_set": ym_set, "ship_total": ship_total,
+        "ship_total_by_ym": ship_total_by_ym, "other_exp": other_exp,
+        "amz_fee_from_expense": amz_fee_from_expense,
+        "non_op_income": non_op_income, "tax_cat_breakdown": tax_cat_breakdown,
+        "inventory_value": inventory_value,
+    }
+
+
+def _aggregate_order_rows(rows, frozen_adj_rows, return_model, start_date, end_date,
+                          amz_fee_from_expense, other_exp, ship_total,
+                          inventory_value, tax_cat_breakdown):
+    """返品モデル適用＋時系列バケット（by_day/by_month/by_dow/by_hour）＋KPI合計。
+    tax_cat_breakdown は in-place 更新（注文由来の Amazon手数料・発送代行を費目に追加）。"""
+    qty_total       = 0
+    sales_total     = 0
+    cost_total      = 0
+    amz_fee_calc    = 0
+    refund_amount   = 0
+    refund_count    = 0
+    shipping_income = 0
+    promotion_total = 0
+    # 時系列バケット（各キー: sales/qty/profit/cost/fee）
+    by_day = {}
+    by_month = {}
+    by_dow = {}
+    by_hour = {}
+
+    def _bump(bucket, key, sales, qty, cost, fee, ship, promo):
+        b = bucket.setdefault(key, {"sales": 0, "qty": 0, "cost": 0, "fee": 0, "ship": 0, "promo": 0})
+        b["sales"] += sales; b["qty"] += qty; b["cost"] += cost
+        b["fee"] += fee;   b["ship"]  += ship; b["promo"] += promo
+
+    for r in rows:
+        q = r["quantity_ordered"] or 0
+        p = r["item_price"] or 0
+        is_return = bool(r["return_id"])
+        if is_return:
+            refund_count += 1
+            refund_amount += p * q
+            if return_model == "exclude":
+                continue  # 売上・仕入・手数料に含めない
+        qty_total += q
+        sales_total += p * q
+        row_sales = p * q
+        row_cost = (r["cost_price"] or 0) * q
+        row_ship = r["shipping_price"] or 0
+        row_promo = r["promotion_discount"] or 0
+        cost_total += row_cost
+        shipping_income += row_ship
+        promotion_total += row_promo
+        # Amazon 手数料: 確定値があれば優先、無ければ estimate_amazon_fee_rate で詳細推定
+        # （キット優先=本体扱い8% / 純レンズブランド=10% / その他レンズ=10% / 本体=8%）
+        if r["amazon_fee_confirmed"] and r["amazon_fee"]:
+            row_fee = r["amazon_fee"]
+        else:
+            title = (r["title"] or "")
+            rate = estimate_amazon_fee_rate(title, None)
+            row_fee = round(p * rate) * q
+        amz_fee_calc += row_fee
+        # グラフ用バケット（時系列別）
+        pd_str = r["purchase_date"] or ""
+        if pd_str:
+            day_key = pd_str[:10]
+            month_key = pd_str[:7]
+            try:
+                dt = datetime.strptime(pd_str[:19], "%Y-%m-%dT%H:%M:%S")
+                dow_key = str(dt.weekday())  # 0=月 ... 6=日（ISO）
+                # SQLiteの strftime('%w') は 0=日曜 なので揃える
+                dow_key = str((dt.weekday() + 1) % 7)
+                hour_key = dt.strftime("%H")
+            except Exception:
+                dow_key = hour_key = None
+            _bump(by_day, day_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
+            _bump(by_month, month_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
+            if dow_key is not None:
+                _bump(by_dow, dow_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
+            if hour_key is not None:
+                _bump(by_hour, hour_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
+
+    # 年度確定済み期間の注文への返品を、返品日基準で当期に調整計上
+    # （売上マイナス＋原価戻し。曜日別・時間帯別の傾向分析には乗せない）
+    for fr in frozen_adj_rows:
+        fq = fr["quantity_ordered"] or 0
+        adj_sales = -(fr["item_price"] or 0) * fq
+        adj_cost = -(fr["cost_price"] or 0) * fq
+        sales_total += adj_sales
+        cost_total += adj_cost
+        rd = fr["return_date"]
+        _bump(by_day, rd, adj_sales, 0, adj_cost, 0, 0, 0)
+        _bump(by_month, rd[:7], adj_sales, 0, adj_cost, 0, 0, 0)
+
+    # Amazon 手数料合計:
+    #   amz_fee_calc        = 個別注文の Item Commission/FBA手数料（確定値 or レート推定）
+    #   amz_fee_from_expense = 月次の Amazon利用料（サブスクリプション・FBA保管料・
+    #                          返品手数料・取り出し手数料等、Finances API から自動集計）
+    #   両者は別カテゴリの手数料なので合算する。
+    amz_fee_total = amz_fee_calc + amz_fee_from_expense
+    # 期間日数
+    days_in_period = max(1, (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days + 1)
+    # 発送代行: ship_total は上で月別 base + per_item × ASIN登録数 で算出済み
+    # その他経費（発送代行も含める）
+    other_exp_total = other_exp + ship_total
+
+    # 利益 = 売上+送料 − 仕入 − 手数料 − その他経費 − プロモ − 返金
+    # exclude モードでは refund_amount=0 相当（ループで除外済み）
+    # subtract_refund モードでは refund_amount が差し引かれる（プライスター方式）
+    refund_deduction = refund_amount if return_model == "subtract_refund" else 0
+    profit = (sales_total + shipping_income
+              - cost_total - amz_fee_total - other_exp_total
+              - promotion_total - refund_deduction)
+    # 現在の出品中商品数（Active かつ qty > 0）
+    # NOTE: 元の with get_db() as conn: ブロックは既に閉じている可能性があるので
+    # 別接続で取り直す。読み取り専用なので安全。
+    with get_db() as _conn_inv:
+        inventory_count_now = _conn_inv.execute("""
+            SELECT COUNT(*) AS c FROM inventory
+            WHERE status LIKE 'Active%' AND quantity > 0
+        """).fetchone()["c"]
+    kpi = {
+        "qty_total": qty_total,
+        "sales_total": sales_total,
+        "shipping_income": shipping_income,
+        "inventory_value": inventory_value,
+        "inventory_count": inventory_count_now,  # 現在の出品中商品数
+        "cost_total": cost_total,
+        "amazon_fee_total": amz_fee_total,
+        "other_expense": other_exp_total,
+        "profit": profit,
+        "avg_qty_per_day": round(qty_total / days_in_period, 2),
+        "avg_price_per_unit": round(sales_total / qty_total, 2) if qty_total else 0,
+        "avg_cost_per_unit": round(cost_total / qty_total, 2) if qty_total else 0,
+        # 利益単価 = 期間内利益 ÷ 期間内販売数
+        "avg_profit_per_unit": round(profit / qty_total, 2) if qty_total else 0,
+        "refund_amount": refund_amount,
+        "refund_count": refund_count,
+        "promotion_total": promotion_total,
+        "profit_rate": round(profit / sales_total * 100, 2) if sales_total else 0,
+    }
+
+    # P/L 用に order_items 由来の Amazon手数料 と 発送代行手数料 を費目別集計に追加
+    # （tax_cat_breakdown には expenses テーブル分しか入っていないため、
+    #   このまま _build_pl に渡すと販管費が大幅に欠落する）
+    if amz_fee_calc > 0:
+        tax_cat_breakdown["支払手数料"] = (
+            tax_cat_breakdown.get("支払手数料", 0) + amz_fee_calc
+        )
+    if ship_total > 0:
+        tax_cat_breakdown["荷造運賃"] = (
+            tax_cat_breakdown.get("荷造運賃", 0) + ship_total
+        )
+    return {
+        "kpi": kpi,
+        "by_day": by_day, "by_month": by_month,
+        "by_dow": by_dow, "by_hour": by_hour,
+        "days_in_period": days_in_period,
+    }
+
+
+def _profit_of(b, exp_per_day=0):
+    """バケットから利益を算出。exp_per_day=この期間単位に按分した固定費"""
+    p = (b["sales"] + b["ship"]
+         - b["cost"] - b["fee"] - b["promo"] - exp_per_day)
+    return p
+
+
+def _build_daily_series(by_day, chart_daily_start, chart_daily_end, per_day_exp,
+                        cu, prev_start_date, prev_end_date, return_model):
+    """日別グラフデータ（0埋め＋累計、前期間比較線、在庫スナップショット）を構築。
+    戻り値: (daily, prev_by_month)  ※prev_by_month は月別グラフの前期間線にも使う"""
+    # 日別（全日付 0 埋め＋累計）
+    # 横軸範囲は chart_daily_start〜chart_daily_end（preset=this は月末まで延長）
+    # 未来日: 売上=0 で 累計売上 は据え置き / 利益も per_day_exp を加算せず据え置き
+    # （実測値のみで構成し、未来日は最新値のまま水平延長）
+    today_iso = datetime.now().date().isoformat()
+    daily = []
+    cum_s = 0; cum_p = 0
+    cur = datetime.combine(chart_daily_start, datetime.min.time())
+    end_dt = datetime.combine(chart_daily_end, datetime.min.time())
+    while cur <= end_dt:
+        key = cur.strftime("%Y-%m-%d")
+        b = by_day.get(key, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
+        if key > today_iso:
+            # 未来日: 固定費按分 (per_day_exp) も計上しない → 累計利益が水平延長
+            prof = 0
+        else:
+            prof = _profit_of(b, per_day_exp)
+        cum_s += b["sales"]
+        cum_p += prof
+        # 累計売上・累計利益は実データがある日（売上 or 販売数 > 0）のみ値を入れる。
+        # 未来日やデータ無い日は null（点同士は spanGaps:true で線結合）。
+        has_data_day = b["sales"] > 0 or b["qty"] > 0
+        daily.append({
+            "k": f"{cur.day}日",
+            "sales": b["sales"], "qty": b["qty"],
+            "profit": round(prof),
+            "cum": cum_s if has_data_day else None,
+            "cum_profit": round(cum_p) if has_data_day else None,
+        })
+        cur += timedelta(days=1)
+
+    # ----- 前期間の日別累計（daily/monthly と重ねるため）-----
+    with get_db() as _conn2:
+        _prev_rows = _conn2.execute(f"""
+            SELECT substr(o.purchase_date, 1, 10) AS day,
+                   substr(o.purchase_date, 1, 7) AS ym,
+                   oi.item_price, oi.quantity_ordered, r.id AS return_id, o.order_status
+            FROM orders o
+            JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+            LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                {FROZEN_RETURNS_JOIN_COND}
+            WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
+              AND substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
+        """, (cu, cu, prev_start_date, prev_end_date)).fetchall()
+    prev_by_day = {}
+    prev_by_month = {}
+    for _r in _prev_rows:
+        if _r["order_status"] == "Pending":
+            continue
+        if return_model == "exclude" and _r["return_id"]:
+            continue
+        _q = _r["quantity_ordered"] or 0
+        _p = _r["item_price"] or 0
+        prev_by_day[_r["day"]] = prev_by_day.get(_r["day"], 0) + _p * _q
+        prev_by_month[_r["ym"]] = prev_by_month.get(_r["ym"], 0) + _p * _q
+    # daily に対応する前期間の同インデックス日の累計を埋める
+    prev_cum_list = []
+    _prev_cur = datetime.strptime(prev_start_date, "%Y-%m-%d")
+    _prev_end = datetime.strptime(prev_end_date, "%Y-%m-%d")
+    _cum = 0
+    while _prev_cur <= _prev_end:
+        _cum += prev_by_day.get(_prev_cur.strftime("%Y-%m-%d"), 0)
+        prev_cum_list.append(_cum)
+        _prev_cur += timedelta(days=1)
+    for i, d in enumerate(daily):
+        if i < len(prev_cum_list):
+            d["cum_prev"] = prev_cum_list[i]
+        elif prev_cum_list:
+            d["cum_prev"] = prev_cum_list[-1]  # 前期間が短ければ最終値で延長
+        else:
+            d["cum_prev"] = 0
+
+    # ----- 累計販売数 + 在庫数の推移（日別） -----
+    # 在庫数は実測スナップショット (inventory_snapshots) のみ表示。
+    # スナップショットが無い日は描画しない（None で線が途切れる）。
+    with get_db() as _conn_snap:
+        try:
+            _snap_rows = _conn_snap.execute(
+                "SELECT snapshot_date, count_active "
+                "FROM inventory_snapshots "
+                "WHERE snapshot_date BETWEEN ? AND ?",
+                (chart_daily_start.isoformat(), chart_daily_end.isoformat())
+            ).fetchall()
+            _snap_map = {r["snapshot_date"]: r["count_active"] for r in _snap_rows}
+        except Exception:
+            # テーブル未生成（初回起動時）は空 dict
+            _snap_map = {}
+
+    _running_q = 0
+    for d in daily:
+        _running_q += d["qty"]
+        # 累計販売数も実データがある日のみ表示（同じ has_data_day 判定）
+        _has_data = d["sales"] > 0 or d["qty"] > 0
+        d["cum_qty"] = _running_q if _has_data else None
+
+    for i, d in enumerate(daily):
+        day_iso = (chart_daily_start + timedelta(days=i)).isoformat()
+        if day_iso in _snap_map:
+            d["inv_est"] = _snap_map[day_iso]
+        else:
+            d["inv_est"] = None  # 実測値が無い日は描画しない
+    return daily, prev_by_month
+
+
+def _build_monthly_series(preset, sd, by_month, ym_set, other_exp,
+                          ship_total_by_ym, prev_by_month):
+    """月別グラフデータ（利益・累計、前期間線、在庫スナップショット）を構築。"""
+    # 月別
+    # 要件: preset=year はその年の1〜12月を全て横軸表示（データなし月は0）
+    # それ以外（this/prev/custom）はデータがある月のみ
+    if preset == "year":
+        month_keys = [f"{sd.year}-{m:02d}" for m in range(1, 13)]
+    else:
+        month_keys = sorted(by_month.keys())
+    monthly = []
+    # other_exp は月数で均等割り（preset=year で 12月分）
+    other_exp_per_month = other_exp / max(1, len(ym_set))
+    cum_profit_running_m = 0
+    for k in month_keys:
+        b = by_month.get(k, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
+        # その月の ship_total（base + per_item × その月のASIN登録数）+ その月の other_exp
+        # KPI と同じ式で月毎に引くことで合計が KPI 利益と一致する
+        m_ship = ship_total_by_ym.get(k, 0)
+        per_month_exp = m_ship + other_exp_per_month
+        prof = _profit_of(b, per_month_exp)
+        # 累計利益: 実測値（売上または販売数があった月）のみ表示。
+        # データの無い月は null（グラフ上で線を切る）。値そのものは累積していく。
+        has_data = b["sales"] > 0 or b["qty"] > 0
+        cum_profit_running_m += prof
+        cum_profit_val = round(cum_profit_running_m) if has_data else None
+        monthly.append({
+            "k": k, "sales": b["sales"], "qty": b["qty"],
+            "profit": round(prof),
+            "cum_profit": cum_profit_val,
+        })
+    # 月別: 前期間（年なら前年）の月別売上を同じ月数で並べる
+    if preset == "year":
+        prev_ym_sorted = [f"{sd.year - 1}-{m:02d}" for m in range(1, 13)]
+    else:
+        prev_ym_sorted = sorted(prev_by_month.keys())
+    # monthly でも累計を渡す（cum_prev=前期間の累計売上）
+    _prev_cum_m = 0
+    for i, m in enumerate(monthly):
+        if i < len(prev_ym_sorted):
+            _prev_cum_m += prev_by_month.get(prev_ym_sorted[i], 0)
+        m["cum_prev"] = _prev_cum_m
+
+    # ----- 累計販売数 + 在庫数の推移（月別） -----
+    # 在庫数は各月の最終スナップショット（月末値の代用）のみ表示。
+    # スナップショットが無い月は描画しない。
+    _ym_snap_map = {}
+    try:
+        with get_db() as _conn_snap_m:
+            _snap_rows_m = _conn_snap_m.execute("""
+                SELECT substr(snapshot_date,1,7) AS ym,
+                       count_active,
+                       snapshot_date
+                FROM inventory_snapshots
+            """).fetchall()
+        for r in _snap_rows_m:
+            ym = r["ym"]
+            cur_best = _ym_snap_map.get(ym)
+            if cur_best is None or r["snapshot_date"] > cur_best[1]:
+                _ym_snap_map[ym] = (r["count_active"], r["snapshot_date"])
+    except Exception:
+        _ym_snap_map = {}
+
+    _running_qm = 0
+    for m in monthly:
+        _running_qm += m["qty"]
+        ym_key = m["k"]
+        # 実データがある月のみ販売数バー・累計販売数を表示
+        # 未来月や売上ゼロ月は null（プロット飛ばし、点同士は spanGaps:true で結合）
+        _has_data_m = (m["sales"] or 0) > 0 or (m["qty"] or 0) > 0
+        m["cum_qty"] = _running_qm if _has_data_m else None
+        if not _has_data_m:
+            m["qty"] = None  # 販売数の棒も描画しない
+        if ym_key in _ym_snap_map:
+            m["inv_est"] = _ym_snap_map[ym_key][0]
+        else:
+            m["inv_est"] = None  # 実測値が無い月は描画しない
+    return monthly
+
+
+def _market_score_section(daily, monthly, chart_daily_start):
+    """市況スコア（BSR）関連の集計。monthly / daily の各要素に market_score 系の
+    キーを in-place で埋める（デバッグログ出力もそのまま実施）。"""
+    # ----- 市場活況度スコア（BSR 履歴から月別中央値）-----
+    # 各 ASIN の BSR 履歴を月別に集約 → 中央値を算出 → 全在庫で月別中央値
+    # スコア = max(0, 100 - 10 × log10(BSR))   数字が大きいほど市場活況
+    import math as _math
+    import json as _json_bsr
+    with get_db() as _conn3:
+        _bsr_rows = [r["bsr_history_json"] for r in _conn3.execute(
+            "SELECT bsr_history_json FROM inventory "
+            "WHERE bsr_history_json IS NOT NULL AND bsr_history_json != '[]'"
+        ).fetchall()]
+        try:
+            from config import DB_PATH as _DBP
+            _diag = _conn3.execute(
+                "SELECT COUNT(*) AS c FROM inventory WHERE bsr_history_json IS NOT NULL"
+            ).fetchone()
+            with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
+                _f.write(f"  DB_PATH={_DBP} bsr_rows={len(_bsr_rows)} hist_total={_diag['c']}\n")
+                if _bsr_rows:
+                    _sample = _bsr_rows[0] or ""
+                    _f.write(f"  sample0 len={len(_sample)} head={_sample[:100]}\n")
+        except Exception as _e:
+            pass
+    # 月別 ym_score 計算（自社在庫BSRの月別中央値）— 月次グラフ用なので live 計算続行
+    # 日次は別途 bsr_score_daily_cache から取得するため、ここでは月単位のみ集計
+    market_score_by_ym = {}
+    _dbg_cnt = {"rows":0, "hist_items":0, "valid_items":0, "asins_with_ym":0}
+    _exc_log = []
+    for _r in _bsr_rows:
+        _dbg_cnt["rows"] += 1
+        try:
+            hist = _json_bsr.loads(_r or "[]")
+        except Exception as _je:
+            if len(_exc_log) < 3:
+                _exc_log.append(f"{type(_je).__name__}: {_je}")
+            continue
+        asin_by_ym = {}
+        for h in hist:
+            _dbg_cnt["hist_items"] += 1
+            _date = h.get("date") or ""
+            _rank = h.get("rank")
+            if not _date or not _rank or _rank <= 0:
+                continue
+            _dbg_cnt["valid_items"] += 1
+            asin_by_ym.setdefault(_date[:7], []).append(_rank)
+        if asin_by_ym:
+            _dbg_cnt["asins_with_ym"] += 1
+        for _ym, _ranks in asin_by_ym.items():
+            if not _ranks:
+                continue
+            _med = sorted(_ranks)[len(_ranks) // 2]
+            market_score_by_ym.setdefault(_ym, []).append(_med)
+    ym_score = {}
+    for _ym, _meds in market_score_by_ym.items():
+        if not _meds:
+            continue
+        _sorted = sorted(_meds)
+        _global_med = _sorted[len(_sorted) // 2]
+        _raw = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
+        ym_score[_ym] = {"raw": _raw, "median_bsr": _global_med}
+    # 過去5年（直近60ヶ月）の min/max でスケーリング
+    from datetime import date as _date_cls
+    _today = _date_cls.today()
+    _cutoff_y = _today.year - 5
+    _cutoff_m = _today.month
+    _recent_raws = [v["raw"] for k, v in ym_score.items()
+                    if (int(k[:4]), int(k[5:7])) >= (_cutoff_y, _cutoff_m)]
+    if _recent_raws and len(_recent_raws) >= 2:
+        _rmin, _rmax = min(_recent_raws), max(_recent_raws)
+        _span = max(0.01, _rmax - _rmin)
+        for _ym, v in ym_score.items():
+            _scaled = 10 + (v["raw"] - _rmin) / _span * 80
+            v["score"] = round(max(0, min(100, _scaled)), 1)
+    else:
+        for _ym, v in ym_score.items():
+            v["score"] = round(v["raw"], 1)
+    _cutoff_day_iso = (_today - timedelta(days=1825)).isoformat()
+    # monthly に market_score / market_bsr を埋める
+    for m in monthly:
+        ks = ym_score.get(m["k"])
+        if ks:
+            m["market_score"] = ks["score"]
+            m["market_bsr"] = ks["median_bsr"]
+        else:
+            m["market_score"] = None
+            m["market_bsr"] = None
+
+    # ----- カメラ市場全体スコア（market_score_cache から）-----
+    try:
+        with get_db() as _conn4:
+            _mrows = _conn4.execute(
+                "SELECT ym, score, median_bsr FROM market_score_cache"
+            ).fetchall()
+        _market_full = {r["ym"]: {"score": r["score"], "median_bsr": r["median_bsr"]}
+                        for r in _mrows}
+        for m in monthly:
+            mf = _market_full.get(m["k"])
+            if mf:
+                m["market_full_score"] = mf["score"]
+                m["market_full_bsr"] = mf["median_bsr"]
+            else:
+                m["market_full_score"] = None
+                m["market_full_bsr"] = None
+    except Exception:
+        for m in monthly:
+            m["market_full_score"] = None
+            m["market_full_bsr"] = None
+        _market_full = {}
+
+    # ----- 日次BSRスコア: bsr_score_daily_cache から取得（高速）-----
+    # 重い JSON parse + median 計算は深夜バッチで済ませてあるので、ここは SELECT のみ。
+    # cache が空（初回起動直後など）の場合は空dictになり、グラフは market_score=None で表示。
+    day_score = {}        # 自社在庫スコア（source='inventory'）
+    day_score_full = {}   # 自社事業の市況スコア（source='market'）
+    try:
+        with get_db() as _conn_cache:
+            for _r in _conn_cache.execute(
+                "SELECT date, source, median_bsr, raw_score, scaled_score "
+                "FROM bsr_score_daily_cache"
+            ):
+                _entry = {
+                    "median_bsr": _r["median_bsr"],
+                    "raw": _r["raw_score"],
+                    "score": _r["scaled_score"],
+                }
+                if _r["source"] == "inventory":
+                    day_score[_r["date"]] = _entry
+                elif _r["source"] == "market":
+                    day_score_full[_r["date"]] = _entry
+    except Exception:
+        pass
+
+    # daily にスコアを埋める:
+    #   - 自社在庫スコア (market_score): 日次集計値を使用（在庫ASINだけなので軽い）
+    #   - 自社事業の市況スコア (market_full_score): 月別と同じく市況ASINの日次中央値から算出
+    #   - 未来日付（today より後）はプロットしない（None）
+    _today_iso = _today.isoformat()
+    for _i, _d in enumerate(daily):
+        _day_dt = chart_daily_start + timedelta(days=_i)
+        _day_iso = _day_dt.isoformat()
+        if _day_iso > _today_iso:
+            # 未来日: スコアプロット不要
+            _d["market_score"] = None
+            _d["market_bsr"] = None
+            _d["market_full_score"] = None
+            _d["market_full_bsr"] = None
+            continue
+        # 自社在庫スコア: 日次集計
+        _ks = day_score.get(_day_iso)
+        if _ks:
+            _d["market_score"] = _ks["score"]
+            _d["market_bsr"] = _ks["median_bsr"]
+        else:
+            _d["market_score"] = None
+            _d["market_bsr"] = None
+        # 自社事業の市況スコア: 市況ASIN日次集計
+        _ksf = day_score_full.get(_day_iso)
+        if _ksf:
+            _d["market_full_score"] = _ksf["score"]
+            _d["market_full_bsr"] = _ksf["median_bsr"]
+        else:
+            _d["market_full_score"] = None
+            _d["market_full_bsr"] = None
+
+    # DEBUG
+    try:
+        with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
+            _f.write(f"{datetime.now().isoformat()} ym_score keys={sorted(ym_score.keys())[-6:]}\n")
+            _f.write(f"  monthly k+score: {[(m['k'], m.get('market_score')) for m in monthly]}\n")
+            _f.write(f"  dbg_cnt: {_dbg_cnt} market_score_by_ym keys={sorted(market_score_by_ym.keys())[-6:]}\n")
+            _f.write(f"  exc_log: {_exc_log}\n")
+    except Exception as _e2:
+        try:
+            with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
+                _f.write(f"  EXC: {_e2}\n")
+        except: pass
+
+
+def _build_dow_hour(by_dow, by_hour):
+    """曜日別・時間帯別の集計（固定費は按分しない）。"""
+    # 曜日別（0=日～6=土）: 固定費は按分しない（集計目的）
+    dow_labels = ["日", "月", "火", "水", "木", "金", "土"]
+    dow_mapped = []
+    for i in range(7):
+        b = by_dow.get(str(i), {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
+        prof = _profit_of(b, 0)  # 曜日別は固定費按分しない
+        dow_mapped.append({"k": dow_labels[i], "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
+
+    # 時間帯別（00〜23）
+    hour = []
+    for h in range(24):
+        hk = f"{h:02d}"
+        b = by_hour.get(hk, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
+        prof = _profit_of(b, 0)
+        hour.append({"k": f"{h}時", "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
+    return dow_mapped, hour
+
+
+def _fill_sold_rank_buckets(sold_buckets, rank_buckets, start_date, end_date, return_model):
+    """販売スピード分布・在庫売れ行きランク分布（円グラフ2つ）を集計。
+    渡された dict を in-place で更新する（例外時に途中まで反映される従来挙動を維持）。"""
+    with get_db() as _c:
+        # 1. 販売スピード分布：ASIN登録日 → 販売日 の経過日数で集計
+        # 右上の期間フィルタ（start_date 〜 end_date）で絞り込む
+        # （Pending除外、return_model='exclude'なら返品も除外）
+        _sql_sold = """
+            SELECT o.purchase_date, oi.quantity_ordered AS q,
+                   r.id AS return_id, inv.asin_listed_at
+            FROM orders o
+            JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
+            LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
+            LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+            WHERE o.order_status IN ('Shipped', 'Unshipped')
+              AND substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
+        """
+        import re as _re
+        def _parse_listed_at(s):
+            if not s:
+                return None
+            m = _re.match(r"(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})", str(s))
+            if not m:
+                return None
+            try:
+                return datetime(int(m[1]), int(m[2]), int(m[3])).date()
+            except ValueError:
+                return None
+        for _r in _c.execute(_sql_sold, (start_date, end_date)):
+            if return_model == "exclude" and _r["return_id"]:
+                continue
+            listed = _parse_listed_at(_r["asin_listed_at"])
+            if not listed:
+                continue
+            try:
+                purchased = datetime.fromisoformat(_r["purchase_date"][:10]).date()
+            except (TypeError, ValueError):
+                continue
+            d = (purchased - listed).days
+            if d < 0:
+                continue  # データ異常（販売日 < 登録日）はスキップ
+            q = _r["q"] or 0
+            if d <= 30:
+                sold_buckets["~30日"] += q
+            elif d <= 60:
+                sold_buckets["30-60日"] += q
+            elif d <= 90:
+                sold_buckets["60-90日"] += q
+            elif d <= 180:
+                sold_buckets["90-180日"] += q
+            else:
+                sold_buckets["180日超"] += q
+
+        # 2. 現在の Active 在庫の売れ行きランク分布
+        _sql_inv = """
+            SELECT inv.keepa_sales_90d, inv.offers_json
+            FROM inventory inv
+            WHERE inv.status LIKE 'Active%' AND inv.quantity > 0
+        """
+        import json as _j
+        for _r in _c.execute(_sql_inv):
+            s = _r["keepa_sales_90d"]
+            try:
+                n = len(_j.loads(_r["offers_json"] or "[]"))
+            except Exception:
+                n = 0
+            if not s or not n:
+                rank_buckets["?"] += 1
+                continue
+            p = (s / 90) / n
+            p30 = 1 - (1 - p) ** 30
+            p60 = 1 - (1 - p) ** 60
+            p90 = 1 - (1 - p) ** 90
+            # 閾値 60%（在庫一覧と統一）
+            if p30 >= 0.6:
+                rank_buckets["S"] += 1
+            elif p60 >= 0.6:
+                rank_buckets["A"] += 1
+            elif p90 >= 0.6:
+                rank_buckets["B"] += 1
+            else:
+                rank_buckets["C"] += 1
+
+
+def _accounting_context(args, now, inventory_value, is_accounting):
+    """/accounting 用の B/S・使途不明金ヒント・月別比較表コンテキストを構築。
+    args には request.args を渡す。"""
+    # B/S オブジェクト + 使途不明金（期末差額）から推奨値を計算
+    bs_obj = _build_bs(
+        int(args.get("bs_year", now.year)),
+        int(args.get("bs_month", now.month)),
+        inventory_value,
+    )
+    # 期末の現在の Amazon未上場在庫の値を取得
+    _cur_unlisted = 0
+    for _sec in bs_obj["end"]["sections"]:
+        for _it in _sec["entries"]:
+            if _it["category"] == "Amazon未上場在庫":
+                _cur_unlisted = _it["amount"] or 0
+                break
+    # 推奨値 = 現在値 - 期末差額（差額0なら現在値のまま）
+    unlisted_balance_hint = _cur_unlisted - bs_obj["end"]["totals"]["balance_diff"]
+    # 決算ページ: 月別比較表のデータを準備（B/S年と同じ年）
+    monthly_summaries = []
+    if is_accounting:
+        _bs_year = int(args.get("bs_year", now.year))
+        _last_month = now.month if _bs_year == now.year else 12
+        for _m in range(1, _last_month + 1):
+            monthly_summaries.append(_compute_monthly_summary(_bs_year, _m))
+    return {
+        "bs_obj": bs_obj,
+        "unlisted_balance_hint": unlisted_balance_hint,
+        "monthly_summaries": monthly_summaries,
+    }
+
+
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = config.SECRET_KEY
@@ -890,299 +2073,15 @@ def create_app():
         else:
             target_dt = _now_real
         today = target_dt.date().isoformat()  # 集計対象月の日付（既存ロジックは substr(today,1,7) で月切り出し）
+        ym = target_dt.strftime("%Y-%m")
         with get_db() as conn:
-            # 今月の売上・販売数・仕入・利益（プライスター方式 / 売上分析と同じ式）
-            # Pending用に inventory.listing_price も取得（item_price が NULL/0 のときの推定価格）
             cu = _get_closed_until()
-            stats_rows = conn.execute(f"""
-                SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
-                       oi.shipping_price, oi.promotion_discount,
-                       oi.title, cp.cost_price, r.id AS return_id, o.order_status,
-                       inv.listing_price AS listing_price
-                FROM orders o
-                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
-                LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
-                LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
-                LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
-                    {FROZEN_RETURNS_JOIN_COND}
-                WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
-                  AND substr(o.purchase_date, 1, 7) = substr(?, 1, 7)
-            """, (cu, cu, today)).fetchall()
-            # 返品計算モード: exclude=返品を集計から除外（再出品で在庫に戻る想定）
-            #                   subtract_refund=プライスター方式（総計から返金額控除）
-            return_model = get_setting("profit_return_model", "exclude")
-            qty_total = sales_total = cost_total = amz_fee = refund_amt = 0
-            shipping_income = 0  # 売上分析と同じ式に揃える: 送料・ギフト入金
-            promotion_total = 0  # プロモーション割引（控除）
-            return_count = 0
-            pending_qty = 0
-            pending_sales = 0  # 価格分かる Pending 分のみ加算（参考値）
-            for r in stats_rows:
-                q = r["quantity_ordered"] or 0
-                p = r["item_price"] or 0
-                # Pending 注文（金額未確定、キャンセル可能性あり）は本集計対象外
-                # ただし「保留中の販売」KPI には別途集計（item_price が NULL/0 なら listing_price で補完）
-                if r["order_status"] == "Pending":
-                    pending_qty += q
-                    p_pending = p if p else (r["listing_price"] or 0)
-                    pending_sales += p_pending * q
-                    continue
-                is_return = bool(r["return_id"])
-                if is_return:
-                    return_count += 1
-                    if return_model == "exclude":
-                        continue  # 完全除外
-                    refund_amt += p * q
-                qty_total += q
-                sales_total += p * q
-                cost_total += (r["cost_price"] or 0) * q
-                shipping_income += r["shipping_price"] or 0
-                promotion_total += r["promotion_discount"] or 0
-                if r["amazon_fee_confirmed"] and r["amazon_fee"]:
-                    amz_fee += r["amazon_fee"]
-                else:
-                    rate = estimate_amazon_fee_rate(r["title"] or "", None)
-                    amz_fee += round(p * rate) * q
-            ym = target_dt.strftime("%Y-%m")
-            # 年度確定済み期間の注文への返品を、返品日基準で当月に調整計上
-            for fr in _frozen_return_rows(conn, ym + "-01", ym + "-31", cu):
-                fq = fr["quantity_ordered"] or 0
-                sales_total -= (fr["item_price"] or 0) * fq
-                cost_total -= (fr["cost_price"] or 0) * fq
-                return_count += 1
-            # 売上分析と同じ式に揃える:
-            # - other:   Amazon利用料・プラス計上を除く経費
-            # - amz_fee_from_expense: Amazon利用料（FBA保管料・サブスク等の月次経費）
-            other = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM expenses "
-                "WHERE year_month=? AND category NOT IN ('Amazon利用料','プラス計上')",
-                (ym,),
-            ).fetchone()[0] or 0
-            amz_fee_from_expense = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM expenses "
-                "WHERE year_month=? AND category='Amazon利用料'",
-                (ym,),
-            ).fetchone()[0] or 0
-            # 発送代行: 売上分析と同じく「base + per_item × その月の ASIN 登録数」
-            ship_row = conn.execute(
-                "SELECT base_fee, per_item_fee FROM shipping_agent_fees "
-                "WHERE effective_from <= ? ORDER BY effective_from DESC LIMIT 1",
-                (ym + "-01",),
-            ).fetchone()
-            ship_base_val = ((ship_row["base_fee"] if ship_row else 0) or 0)
-            ship_per_val = ((ship_row["per_item_fee"] if ship_row else 0) or 0)
-            ym_slash = ym.replace("-", "/")
-            asin_registered_in_month = conn.execute(
-                "SELECT COUNT(*) FROM inventory "
-                "WHERE substr(asin_listed_at, 1, 7) = ?",
-                (ym_slash,),
-            ).fetchone()[0] or 0
-            ship_total = ship_base_val + ship_per_val * asin_registered_in_month
-            # 売上分析と同じ式: 売上 + 送料 − 仕入 − Amazon手数料 − 経費 − 発送代行 − プロモ − 返金
-            amz_fee_total = amz_fee + amz_fee_from_expense
-            profit = (sales_total + shipping_income
-                      - cost_total - amz_fee_total - other - ship_total
-                      - promotion_total - refund_amt)
-            # 現在の在庫数（Active かつ qty>0 の SKU 数 ＝ 出品中商品数）
-            inventory_count = conn.execute("""
-                SELECT COUNT(*) AS c FROM inventory
-                WHERE status LIKE 'Active%' AND quantity > 0
-            """).fetchone()["c"]
-            stats = {"sales_total": sales_total, "qty_total": qty_total,
-                     "cost_total": cost_total, "profit": profit,
-                     "inventory_count": inventory_count,
-                     "pending_qty": pending_qty, "pending_sales": pending_sales}
-
-            returns_count = conn.execute(
-                "SELECT COUNT(*) AS c FROM returns WHERE return_date > date('now', '-30 days')"
-            ).fetchone()["c"]
-
-            # 対象月の日別売上＋利益（全日付で 0 埋め、累計線用）
-            now = target_dt
-            first = now.replace(day=1)
-            if now.month == 12:
-                next_first = now.replace(year=now.year + 1, month=1, day=1)
-            else:
-                next_first = now.replace(month=now.month + 1, day=1)
-            days_in_month = (next_first - first).days
-
-            # 日別の売上・仕入・手数料・数量を集計（返品は return_model に従う、Pending は除外）
-            daily_rows = conn.execute(f"""
-                SELECT substr(o.purchase_date, 1, 10) AS day,
-                       oi.item_price, oi.quantity_ordered,
-                       oi.amazon_fee, oi.amazon_fee_confirmed, oi.title,
-                       oi.shipping_price, oi.promotion_discount,
-                       cp.cost_price, r.id AS return_id, o.order_status
-                FROM orders o
-                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
-                LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
-                LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
-                    {FROZEN_RETURNS_JOIN_COND}
-                WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
-                  AND substr(o.purchase_date, 1, 7) = substr(?, 1, 7)
-            """, (cu, cu, today)).fetchall()
+            stats, returns_count, ship_total = _dashboard_kpi(conn, today, ym, cu)
             rm = get_setting("profit_return_model", "exclude")
-            by_day_agg = {}  # day -> {sales, qty, cost, fee}
-            for row in daily_rows:
-                day = row["day"]
-                # Pending は売価未確定のため集計外
-                if row["order_status"] == "Pending":
-                    continue
-                is_ret = bool(row["return_id"])
-                if is_ret and rm == "exclude":
-                    continue
-                q = row["quantity_ordered"] or 0
-                p = row["item_price"] or 0
-                if row["amazon_fee_confirmed"] and row["amazon_fee"]:
-                    fee = row["amazon_fee"]
-                else:
-                    rate = estimate_amazon_fee_rate(row["title"] or "", None)
-                    fee = round(p * rate) * q
-                b = by_day_agg.setdefault(day, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
-                b["sales"]   += p * q
-                b["qty"]     += q
-                b["cost"]    += (row["cost_price"] or 0) * q
-                b["fee"]     += fee
-                b["ship_in"] += row["shipping_price"] or 0
-                b["promo"]   += row["promotion_discount"] or 0
-                if is_ret:
-                    b["refund"] += p * q
-            # 年度確定済み期間の注文への返品を、返品日の日別バケットに調整計上
-            for fr in _frozen_return_rows(conn, ym + "-01", ym + "-31", cu):
-                fq = fr["quantity_ordered"] or 0
-                b = by_day_agg.setdefault(fr["return_date"], {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
-                b["sales"] -= (fr["item_price"] or 0) * fq
-                b["cost"] -= (fr["cost_price"] or 0) * fq
-            # 固定費（発送代行・その他経費）は日割りで按分
-            other = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) FROM expenses "
-                "WHERE year_month=? AND category NOT IN ('Amazon利用料','プラス計上')",
-                (ym,),
-            ).fetchone()[0] or 0
-            # 固定費（ship_total + other）を月の総日数で日割り按分。
-            # 累計利益は「その日までに実際に発生した固定費」だけを引く（実測値）ため、
-            # 月途中では KPI 利益（full ship_total を引く想定）と一致しない。
-            # 月末日まで進めば自然に一致する。
-            per_day_fixed = (ship_total + other) / days_in_month
-
-            this_month = []
-            cum_sales = 0
-            cum_profit = 0
-            today_iso_dash = datetime.now().date().isoformat()
-            for d in range(1, days_in_month + 1):
-                day_iso = first.replace(day=d).strftime("%Y-%m-%d")
-                b = by_day_agg.get(day_iso, {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
-                refund_deduction = b["refund"] if rm == "subtract_refund" else 0
-                if day_iso > today_iso_dash:
-                    # 未来日: 固定費按分も引かない → 累計利益が水平延長
-                    day_profit = 0
-                else:
-                    # 売上分析と同じ式: + 送料、− プロモ。
-                    # 発送代行は ship_total を per_day_fixed で日割り（per_item × qty は撤廃）。
-                    day_profit = (b["sales"] + b["ship_in"]
-                                  - b["cost"] - b["fee"]
-                                  - per_day_fixed
-                                  - b["promo"] - refund_deduction)
-                cum_sales  += b["sales"]
-                cum_profit += day_profit
-                # 累計売上・累計利益は実データがある日（売上 or 販売数 > 0）のみ表示。
-                # 未来日およびデータ無い日は null（プロット飛ばし。点同士は線で結ぶ）。
-                has_data = b["sales"] > 0 or b["qty"] > 0
-                this_month.append({
-                    "day": day_iso, "d": d,
-                    "sales": b["sales"], "qty": b["qty"],
-                    "profit": round(day_profit),
-                    "cum": cum_sales if has_data else None,
-                    "cum_profit": round(cum_profit) if has_data else None,
-                })
-
-            # ---- 前月の日別累計売上（モチベ比較用、当月チャートに重ねる）----
-            prev_last = first - timedelta(days=1)
-            prev_first = prev_last.replace(day=1)
-            days_in_prev = (first - prev_first).days
-            prev_ym = prev_first.strftime("%Y-%m")
-            prev_daily_rows = conn.execute(f"""
-                SELECT substr(o.purchase_date, 1, 10) AS day,
-                       oi.item_price, oi.quantity_ordered, r.id AS return_id, o.order_status
-                FROM orders o
-                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
-                LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
-                    {FROZEN_RETURNS_JOIN_COND}
-                WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
-                  AND substr(o.purchase_date, 1, 7) = ?
-            """, (cu, cu, prev_ym)).fetchall()
-            prev_by_day = {}
-            for row in prev_daily_rows:
-                if row["order_status"] == "Pending":
-                    continue
-                is_ret = bool(row["return_id"])
-                if is_ret and rm == "exclude":
-                    continue
-                q = row["quantity_ordered"] or 0
-                p = row["item_price"] or 0
-                day = row["day"]
-                b = prev_by_day.setdefault(day, {"sales": 0})
-                b["sales"] += p * q
-            prev_month = []
-            prev_cum = 0
-            for d in range(1, days_in_prev + 1):
-                day_iso = prev_first.replace(day=d).strftime("%Y-%m-%d")
-                b = prev_by_day.get(day_iso, {"sales": 0})
-                prev_cum += b["sales"]
-                prev_month.append({"d": d, "cum": prev_cum})
-
-            # 最新の売れた商品10件（Pendingは item_price が NULL/0 の場合 inventory.listing_price で補完）
-            # 利益も推定値で算出: 売価 - 仕入 - Amazon手数料 - 発送代行(per_item)
-            _recent_rows = conn.execute("""
-                SELECT o.purchase_date, oi.title, oi.seller_sku,
-                       oi.item_price, oi.quantity_ordered,
-                       oi.amazon_fee, oi.amazon_fee_confirmed,
-                       oi.shipping_price, oi.promotion_discount,
-                       cp.cost_price,
-                       inv.listing_price AS listing_price,
-                       o.order_status
-                FROM orders o
-                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
-                LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
-                LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
-                WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
-                ORDER BY o.purchase_date DESC LIMIT 10
-            """).fetchall()
-            # per_item 発送代行手数料（最新の設定値）
-            _ship_row = conn.execute(
-                "SELECT per_item_fee FROM shipping_agent_fees ORDER BY effective_from DESC LIMIT 1"
-            ).fetchone()
-            _ship_per = ((_ship_row["per_item_fee"] if _ship_row else 0) or 0)
-
-            recent_sold = []
-            for r in _recent_rows:
-                price = r["item_price"] or 0
-                qty = r["quantity_ordered"] or 1
-                # Pending で価格未確定なら listing_price で推定
-                price_est = price == 0 or r["item_price"] is None
-                if price_est:
-                    price = r["listing_price"] or 0
-                # Amazon 手数料: 確定値があればそれ、無ければレート推定
-                if r["amazon_fee_confirmed"] and r["amazon_fee"]:
-                    fee = r["amazon_fee"]
-                else:
-                    rate = estimate_amazon_fee_rate(r["title"] or "", None)
-                    fee = round(price * rate) * qty
-                cost = (r["cost_price"] or 0) * qty
-                ship_in = r["shipping_price"] or 0
-                promo = r["promotion_discount"] or 0
-                profit_est = (price * qty + ship_in) - cost - fee - (_ship_per * qty) - promo
-                recent_sold.append({
-                    "purchase_date": r["purchase_date"],
-                    "seller_sku": r["seller_sku"],
-                    "title": r["title"],
-                    "item_price": price,
-                    "price_estimated": price_est,
-                    "order_status": r["order_status"],
-                    "profit_est": int(round(profit_est)),
-                    # 仕入が登録されていない or 0 の場合は利益推定の信頼度が低い
-                    "profit_unreliable": (r["cost_price"] or 0) == 0,
-                })
+            this_month, first = _dashboard_daily_series(
+                conn, today, ym, cu, target_dt, ship_total, rm)
+            prev_month, prev_first = _dashboard_prev_month_series(conn, cu, first, rm)
+            recent_sold = _dashboard_recent_sold(conn)
 
         return render_template(
             "dashboard.html",
@@ -1777,716 +2676,56 @@ def create_app():
         /analytics: KPI・売上推移チャート（メイン）
         /accounting: 費目別集計・P/L・B/S（メイン）
         期間プリセット: 当月(this) / 前月(prev) / カスタム (from&to)"""
-        preset = request.args.get("preset", "this")
-        # アクティブタブの保持（期間変更してもタブが維持されるように）
-        tab = request.args.get("tab")
-        if tab not in ("monthly", "daily", "dow", "hour"):
-            # 未指定: 年間 → 月別、それ以外 → 日別
-            tab = "monthly" if preset == "year" else "daily"
         now = datetime.now()
-        if preset == "prev":
-            first_this = now.replace(day=1)
-            prev_last  = first_this - timedelta(days=1)
-            start_date = prev_last.replace(day=1).strftime("%Y-%m-%d")
-            end_date   = prev_last.strftime("%Y-%m-%d")
-        elif preset == "year":
-            # 当年: 1月1日〜今日（月別グラフで12ヶ月分の棒が出る）
-            start_date = now.replace(month=1, day=1).strftime("%Y-%m-%d")
-            end_date   = now.strftime("%Y-%m-%d")
-        elif preset == "custom":
-            start_date = request.args.get("from") or now.replace(day=1).strftime("%Y-%m-%d")
-            end_date   = request.args.get("to")   or now.strftime("%Y-%m-%d")
-        else:  # this
-            start_date = now.replace(day=1).strftime("%Y-%m-%d")
-            end_date   = now.strftime("%Y-%m-%d")
+        period = _parse_analytics_period(request.args, now)
+        preset = period["preset"]
+        tab = period["tab"]
+        start_date = period["start_date"]
+        end_date = period["end_date"]
+        prev_start_date = period["prev_start_date"]
+        prev_end_date = period["prev_end_date"]
+        prev_label = period["prev_label"]
+        chart_daily_start = period["chart_daily_start"]
+        chart_daily_end = period["chart_daily_end"]
 
-        # ----- 前同期間（モチベ比較用、累計売上線に重ねる）-----
-        # this  → 前月 / prev → 前々月 / year → 前年 / custom → 同じ期間長の直前
-        from datetime import date as _date
-        _sd = _date.fromisoformat(start_date)
-        _ed = _date.fromisoformat(end_date)
-        if preset == "this":
-            _prev_first = (_sd - timedelta(days=1)).replace(day=1)
-            _prev_end = _sd - timedelta(days=1)
-            prev_label = _prev_first.strftime("%Y年%m月").replace("年0", "年")
-        elif preset == "prev":
-            _prev_first = (_sd - timedelta(days=1)).replace(day=1)
-            _prev_end = _sd - timedelta(days=1)
-            prev_label = _prev_first.strftime("%Y年%m月").replace("年0", "年")
-        elif preset == "year":
-            _prev_first = _sd.replace(year=_sd.year - 1)
-            _prev_end = _ed.replace(year=_ed.year - 1)
-            prev_label = f"{_sd.year - 1}年"
-        else:  # custom
-            _len = (_ed - _sd).days + 1
-            _prev_end = _sd - timedelta(days=1)
-            _prev_first = _prev_end - timedelta(days=_len - 1)
-            prev_label = f"{_prev_first} 〜 {_prev_end}"
-        prev_start_date = _prev_first.strftime("%Y-%m-%d")
-        prev_end_date = _prev_end.strftime("%Y-%m-%d")
-
-        # ----- グラフ表示用の横軸範囲（データ集計範囲とは別） -----
-        # 要件: 当月日別は1日〜月末日、年間月別は1〜12月、その他はデータ範囲どおり
-        # （未来日もラベルは表示するが値は0で埋まる）
-        from calendar import monthrange as _monthrange
-        if preset == "this":
-            # 当月日別: 月初〜月末日
-            chart_daily_start = _sd  # 月初（既に day=1）
-            _last_day = _monthrange(_sd.year, _sd.month)[1]
-            chart_daily_end = _sd.replace(day=_last_day)
-        else:
-            # prev/year/custom はデータ範囲をそのまま（prev は元から月末まで）
-            chart_daily_start = _sd
-            chart_daily_end = _ed
-
-        with get_db() as conn:
-            # （日別/月別/曜日別/時間帯別のデータは下部で Python 集計するため SQL グループは不要）
-            params = (start_date, end_date)
-
-            # KPI の素データ（Pending は価格未確定のため除外、Unshipped は含める）
-            cu = _get_closed_until()
-            rows = conn.execute(f"""
-                SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
-                       oi.title, oi.shipping_price, oi.promotion_discount,
-                       cp.cost_price, r.id AS return_id,
-                       o.purchase_date, o.order_status
-                FROM orders o
-                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
-                LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
-                LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
-                    {FROZEN_RETURNS_JOIN_COND}
-                WHERE substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
-                  AND o.order_status IN ('Shipped', 'Unshipped')
-            """, (cu, cu) + params).fetchall()
-
-            # 年度確定済み期間の注文への返品（返品日が期間内）→ 調整計上用
-            frozen_adj_rows = _frozen_return_rows(conn, start_date, end_date, cu)
-
-            # 発送代行手数料: per_item は注文画面・在庫画面の表示用に「最新値」を1つ取得
-            ship_row = conn.execute(
-                "SELECT per_item_fee, base_fee FROM shipping_agent_fees "
-                "ORDER BY effective_from DESC LIMIT 1"
-            ).fetchone()
-            ship_per_item = (ship_row["per_item_fee"] if ship_row else 0) or 0
-            ship_base     = (ship_row["base_fee"] if ship_row else 0) or 0
-
-            # 期間に含まれる year-month の expenses 合計
-            # 月を計算
-            ym_set = set()
-            cur = datetime.strptime(start_date, "%Y-%m-%d")
-            end = datetime.strptime(end_date, "%Y-%m-%d")
-            while cur <= end:
-                ym_set.add(cur.strftime("%Y-%m"))
-                # 次の月へ
-                y, m = cur.year, cur.month
-                cur = cur.replace(year=(y+1 if m == 12 else y), month=(1 if m == 12 else m+1), day=1)
-
-            # 月別の shipping_agent_fees（base_fee, per_item_fee）と
-            # 月別の ASIN登録数（販売済み含む全SKU）を取得して
-            # ship_total = Σ (base + per_item × ASIN登録数_in_month)
-            # ※注: 注文画面の per-order 代行手数料は最新の per_item_fee 単一値を使用
-            # ship_total_by_ym: 月別グラフで月毎の発送代行を引くために保持
-            ship_total = 0
-            ship_total_by_ym = {}
-            for ym in sorted(ym_set):
-                # その月有効の base_fee, per_item_fee（effective_from <= 月初）
-                eff = ym + "-01"
-                sa = conn.execute(
-                    "SELECT base_fee, per_item_fee FROM shipping_agent_fees "
-                    "WHERE effective_from <= ? ORDER BY effective_from DESC LIMIT 1",
-                    (eff,)
-                ).fetchone()
-                m_base = (sa["base_fee"] if sa else 0) or 0
-                m_per  = (sa["per_item_fee"] if sa else 0) or 0
-                # その月にASIN登録された全SKU数（Active+Inactive）
-                ym_slash = ym.replace("-", "/")
-                arow = conn.execute(
-                    "SELECT COUNT(*) AS n FROM inventory "
-                    "WHERE substr(asin_listed_at,1,7)=?",
-                    (ym_slash,)
-                ).fetchone()
-                m_asin = (arow["n"] if arow else 0) or 0
-                m_ship_total = m_base + m_per * m_asin
-                ship_total_by_ym[ym] = m_ship_total
-                ship_total += m_ship_total
-
-            other_exp = 0
-            amz_fee_from_expense = 0
-            non_op_income = 0  # 営業外収益（プラス計上）
-            tax_cat_breakdown = {}  # 費目別合計（確定申告用）
-            if ym_set:
-                placeholders = ",".join(["?"] * len(ym_set))
-                exp_rows = conn.execute(
-                    f"SELECT category, tax_category, SUM(amount) AS total FROM expenses "
-                    f"WHERE year_month IN ({placeholders}) GROUP BY category, tax_category",
-                    tuple(ym_set),
-                ).fetchall()
-                for er in exp_rows:
-                    amt = er["total"] or 0
-                    if er["category"] == "Amazon利用料":
-                        amz_fee_from_expense += amt
-                    elif er["category"] == "プラス計上":
-                        non_op_income += amt
-                    else:
-                        other_exp += amt
-                    # 費目別集計（プラス計上は除外、自動Amazon利用料は支払手数料に含める）
-                    tc = er["tax_category"]
-                    if not tc and er["category"] == "Amazon利用料":
-                        tc = "支払手数料"
-                    # 注: 負の値も含める（割引調整など。プラス計上のみ別経路）
-                    if tc and amt and er["category"] != "プラス計上":
-                        tax_cat_breakdown[tc] = tax_cat_breakdown.get(tc, 0) + amt
-
-            # 棚卸資産（自動）: Amazon Active 在庫のみ評価。
-            # Amazon にまだ上場していない物理在庫は B/S の「Amazon未上場在庫」欄
-            # （ユーザー手入力）で別途管理する。
-            inv_value_row = conn.execute("""
-                SELECT COALESCE(SUM(cp.cost_price * inv.quantity), 0) AS val
-                FROM inventory inv
-                LEFT JOIN cost_prices cp ON cp.seller_sku = inv.seller_sku
-                WHERE inv.status LIKE 'Active%' AND inv.quantity > 0
-                  AND cp.cost_price > 0
-            """).fetchone()
-            inventory_value = inv_value_row["val"] if inv_value_row else 0
-
-            # 仕入れ台帳依存(sale_flag/sale_date)を使った推奨計算は廃止。
-            # 代わりに「Web内の B/S データだけから算出される期末差額（使途不明金）」を
-            # Amazon未上場在庫の推奨値として表示する（_build_bs 後に計算）。
-
-            # 返金: returns テーブルの数量
-            refund_rows = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM returns r "
-                "WHERE substr(r.return_date, 1, 10) BETWEEN ? AND ?",
-                params,
-            ).fetchone()
-            refund_cnt = refund_rows["cnt"] if refund_rows else 0
+        base = _analytics_kpi_rows(start_date, end_date)
+        cu = base["cu"]
+        ym_set = base["ym_set"]
+        ship_total = base["ship_total"]
+        other_exp = base["other_exp"]
+        non_op_income = base["non_op_income"]
+        tax_cat_breakdown = base["tax_cat_breakdown"]
+        inventory_value = base["inventory_value"]
 
         # 返品計算モード（設定で切替）
         # exclude: 返品を集計から除外（再出品で在庫に戻る前提）
         # subtract_refund: プライスター方式（総計に含めた上で返金額を控除）
         return_model = get_setting("profit_return_model", "exclude")
-        qty_total       = 0
-        sales_total     = 0
-        cost_total      = 0
-        amz_fee_calc    = 0
-        refund_amount   = 0
-        refund_count    = 0
-        shipping_income = 0
-        promotion_total = 0
-        # 時系列バケット（各キー: sales/qty/profit/cost/fee）
-        by_day = {}
-        by_month = {}
-        by_dow = {}
-        by_hour = {}
-
-        def _bump(bucket, key, sales, qty, cost, fee, ship, promo):
-            b = bucket.setdefault(key, {"sales": 0, "qty": 0, "cost": 0, "fee": 0, "ship": 0, "promo": 0})
-            b["sales"] += sales; b["qty"] += qty; b["cost"] += cost
-            b["fee"] += fee;   b["ship"]  += ship; b["promo"] += promo
-
-        for r in rows:
-            q = r["quantity_ordered"] or 0
-            p = r["item_price"] or 0
-            is_return = bool(r["return_id"])
-            if is_return:
-                refund_count += 1
-                refund_amount += p * q
-                if return_model == "exclude":
-                    continue  # 売上・仕入・手数料に含めない
-            qty_total += q
-            sales_total += p * q
-            row_sales = p * q
-            row_cost = (r["cost_price"] or 0) * q
-            row_ship = r["shipping_price"] or 0
-            row_promo = r["promotion_discount"] or 0
-            cost_total += row_cost
-            shipping_income += row_ship
-            promotion_total += row_promo
-            # Amazon 手数料: 確定値があれば優先、無ければ estimate_amazon_fee_rate で詳細推定
-            # （キット優先=本体扱い8% / 純レンズブランド=10% / その他レンズ=10% / 本体=8%）
-            if r["amazon_fee_confirmed"] and r["amazon_fee"]:
-                row_fee = r["amazon_fee"]
-            else:
-                title = (r["title"] or "")
-                rate = estimate_amazon_fee_rate(title, None)
-                row_fee = round(p * rate) * q
-            amz_fee_calc += row_fee
-            # グラフ用バケット（時系列別）
-            pd_str = r["purchase_date"] or ""
-            if pd_str:
-                day_key = pd_str[:10]
-                month_key = pd_str[:7]
-                try:
-                    dt = datetime.strptime(pd_str[:19], "%Y-%m-%dT%H:%M:%S")
-                    dow_key = str(dt.weekday())  # 0=月 ... 6=日（ISO）
-                    # SQLiteの strftime('%w') は 0=日曜 なので揃える
-                    dow_key = str((dt.weekday() + 1) % 7)
-                    hour_key = dt.strftime("%H")
-                except Exception:
-                    dow_key = hour_key = None
-                _bump(by_day, day_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
-                _bump(by_month, month_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
-                if dow_key is not None:
-                    _bump(by_dow, dow_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
-                if hour_key is not None:
-                    _bump(by_hour, hour_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
-
-        # 年度確定済み期間の注文への返品を、返品日基準で当期に調整計上
-        # （売上マイナス＋原価戻し。曜日別・時間帯別の傾向分析には乗せない）
-        for fr in frozen_adj_rows:
-            fq = fr["quantity_ordered"] or 0
-            adj_sales = -(fr["item_price"] or 0) * fq
-            adj_cost = -(fr["cost_price"] or 0) * fq
-            sales_total += adj_sales
-            cost_total += adj_cost
-            rd = fr["return_date"]
-            _bump(by_day, rd, adj_sales, 0, adj_cost, 0, 0, 0)
-            _bump(by_month, rd[:7], adj_sales, 0, adj_cost, 0, 0, 0)
-
-        # Amazon 手数料合計:
-        #   amz_fee_calc        = 個別注文の Item Commission/FBA手数料（確定値 or レート推定）
-        #   amz_fee_from_expense = 月次の Amazon利用料（サブスクリプション・FBA保管料・
-        #                          返品手数料・取り出し手数料等、Finances API から自動集計）
-        #   両者は別カテゴリの手数料なので合算する。
-        amz_fee_total = amz_fee_calc + amz_fee_from_expense
-        # 期間日数
-        days_in_period = max(1, (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days + 1)
-        # 発送代行: ship_total は上で月別 base + per_item × ASIN登録数 で算出済み
-        # その他経費（発送代行も含める）
-        other_exp_total = other_exp + ship_total
-
-        # 利益 = 売上+送料 − 仕入 − 手数料 − その他経費 − プロモ − 返金
-        # exclude モードでは refund_amount=0 相当（ループで除外済み）
-        # subtract_refund モードでは refund_amount が差し引かれる（プライスター方式）
-        refund_deduction = refund_amount if return_model == "subtract_refund" else 0
-        profit = (sales_total + shipping_income
-                  - cost_total - amz_fee_total - other_exp_total
-                  - promotion_total - refund_deduction)
-        # 現在の出品中商品数（Active かつ qty > 0）
-        # NOTE: 元の with get_db() as conn: ブロックは既に閉じている可能性があるので
-        # 別接続で取り直す。読み取り専用なので安全。
-        with get_db() as _conn_inv:
-            inventory_count_now = _conn_inv.execute("""
-                SELECT COUNT(*) AS c FROM inventory
-                WHERE status LIKE 'Active%' AND quantity > 0
-            """).fetchone()["c"]
-        kpi = {
-            "qty_total": qty_total,
-            "sales_total": sales_total,
-            "shipping_income": shipping_income,
-            "inventory_value": inventory_value,
-            "inventory_count": inventory_count_now,  # 現在の出品中商品数
-            "cost_total": cost_total,
-            "amazon_fee_total": amz_fee_total,
-            "other_expense": other_exp_total,
-            "profit": profit,
-            "avg_qty_per_day": round(qty_total / days_in_period, 2),
-            "avg_price_per_unit": round(sales_total / qty_total, 2) if qty_total else 0,
-            "avg_cost_per_unit": round(cost_total / qty_total, 2) if qty_total else 0,
-            # 利益単価 = 期間内利益 ÷ 期間内販売数
-            "avg_profit_per_unit": round(profit / qty_total, 2) if qty_total else 0,
-            "refund_amount": refund_amount,
-            "refund_count": refund_count,
-            "promotion_total": promotion_total,
-            "profit_rate": round(profit / sales_total * 100, 2) if sales_total else 0,
-        }
-
-        # P/L 用に order_items 由来の Amazon手数料 と 発送代行手数料 を費目別集計に追加
-        # （tax_cat_breakdown には expenses テーブル分しか入っていないため、
-        #   このまま _build_pl に渡すと販管費が大幅に欠落する）
-        if amz_fee_calc > 0:
-            tax_cat_breakdown["支払手数料"] = (
-                tax_cat_breakdown.get("支払手数料", 0) + amz_fee_calc
-            )
-        if ship_total > 0:
-            tax_cat_breakdown["荷造運賃"] = (
-                tax_cat_breakdown.get("荷造運賃", 0) + ship_total
-            )
+        agg = _aggregate_order_rows(
+            base["rows"], base["frozen_adj_rows"], return_model,
+            start_date, end_date, base["amz_fee_from_expense"],
+            other_exp, ship_total, inventory_value, tax_cat_breakdown)
+        kpi = agg["kpi"]
 
         # --- グラフ用データ生成（売上・販売数・利益・累計売上）---
         # 行別の経費・発送代行を日次配分するための単位
         # 固定費: ship_total（base + per_item × ASIN登録数）+ other_exp を期間の日数で均等割り。
         # KPI 利益と式を完全一致させるため、per_item を qty 掛けではなく、登録ASIN数ベースの
         # ship_total を日割り按分する形に統一（差分: 売れ残り ASIN 分の per_item を含むか否か）。
-        def _profit_of(b, exp_per_day=0):
-            """バケットから利益を算出。exp_per_day=この期間単位に按分した固定費"""
-            p = (b["sales"] + b["ship"]
-                 - b["cost"] - b["fee"] - b["promo"] - exp_per_day)
-            return p
-
         # 期間の固定費（発送代行 ship_total + other_exp）を日数で均等割り
-        # ship_total は 1791-1810 で算出済み: Σ(base + per_item × ASIN登録数_in_month)
+        # ship_total は _analytics_kpi_rows で算出済み: Σ(base + per_item × ASIN登録数_in_month)
+        days_in_period = agg["days_in_period"]
         fixed_total_for_period = ship_total + other_exp
         per_day_exp = fixed_total_for_period / days_in_period if days_in_period else 0
 
-        # 日別（全日付 0 埋め＋累計）
-        # 横軸範囲は chart_daily_start〜chart_daily_end（preset=this は月末まで延長）
-        # 未来日: 売上=0 で 累計売上 は据え置き / 利益も per_day_exp を加算せず据え置き
-        # （実測値のみで構成し、未来日は最新値のまま水平延長）
-        today_iso = datetime.now().date().isoformat()
-        daily = []
-        cum_s = 0; cum_p = 0
-        cur = datetime.combine(chart_daily_start, datetime.min.time())
-        end_dt = datetime.combine(chart_daily_end, datetime.min.time())
-        while cur <= end_dt:
-            key = cur.strftime("%Y-%m-%d")
-            b = by_day.get(key, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
-            if key > today_iso:
-                # 未来日: 固定費按分 (per_day_exp) も計上しない → 累計利益が水平延長
-                prof = 0
-            else:
-                prof = _profit_of(b, per_day_exp)
-            cum_s += b["sales"]
-            cum_p += prof
-            # 累計売上・累計利益は実データがある日（売上 or 販売数 > 0）のみ値を入れる。
-            # 未来日やデータ無い日は null（点同士は spanGaps:true で線結合）。
-            has_data_day = b["sales"] > 0 or b["qty"] > 0
-            daily.append({
-                "k": f"{cur.day}日",
-                "sales": b["sales"], "qty": b["qty"],
-                "profit": round(prof),
-                "cum": cum_s if has_data_day else None,
-                "cum_profit": round(cum_p) if has_data_day else None,
-            })
-            cur += timedelta(days=1)
-
-        # ----- 前期間の日別累計（daily/monthly と重ねるため）-----
-        with get_db() as _conn2:
-            _prev_rows = _conn2.execute(f"""
-                SELECT substr(o.purchase_date, 1, 10) AS day,
-                       substr(o.purchase_date, 1, 7) AS ym,
-                       oi.item_price, oi.quantity_ordered, r.id AS return_id, o.order_status
-                FROM orders o
-                JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
-                LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
-                    {FROZEN_RETURNS_JOIN_COND}
-                WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
-                  AND substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
-            """, (cu, cu, prev_start_date, prev_end_date)).fetchall()
-        prev_by_day = {}
-        prev_by_month = {}
-        for _r in _prev_rows:
-            if _r["order_status"] == "Pending":
-                continue
-            if return_model == "exclude" and _r["return_id"]:
-                continue
-            _q = _r["quantity_ordered"] or 0
-            _p = _r["item_price"] or 0
-            prev_by_day[_r["day"]] = prev_by_day.get(_r["day"], 0) + _p * _q
-            prev_by_month[_r["ym"]] = prev_by_month.get(_r["ym"], 0) + _p * _q
-        # daily に対応する前期間の同インデックス日の累計を埋める
-        prev_cum_list = []
-        _prev_cur = datetime.strptime(prev_start_date, "%Y-%m-%d")
-        _prev_end = datetime.strptime(prev_end_date, "%Y-%m-%d")
-        _cum = 0
-        while _prev_cur <= _prev_end:
-            _cum += prev_by_day.get(_prev_cur.strftime("%Y-%m-%d"), 0)
-            prev_cum_list.append(_cum)
-            _prev_cur += timedelta(days=1)
-        for i, d in enumerate(daily):
-            if i < len(prev_cum_list):
-                d["cum_prev"] = prev_cum_list[i]
-            elif prev_cum_list:
-                d["cum_prev"] = prev_cum_list[-1]  # 前期間が短ければ最終値で延長
-            else:
-                d["cum_prev"] = 0
-
-        # ----- 累計販売数 + 在庫数の推移（日別） -----
-        # 在庫数は実測スナップショット (inventory_snapshots) のみ表示。
-        # スナップショットが無い日は描画しない（None で線が途切れる）。
-        with get_db() as _conn_snap:
-            try:
-                _snap_rows = _conn_snap.execute(
-                    "SELECT snapshot_date, count_active "
-                    "FROM inventory_snapshots "
-                    "WHERE snapshot_date BETWEEN ? AND ?",
-                    (chart_daily_start.isoformat(), chart_daily_end.isoformat())
-                ).fetchall()
-                _snap_map = {r["snapshot_date"]: r["count_active"] for r in _snap_rows}
-            except Exception:
-                # テーブル未生成（初回起動時）は空 dict
-                _snap_map = {}
-
-        _running_q = 0
-        for d in daily:
-            _running_q += d["qty"]
-            # 累計販売数も実データがある日のみ表示（同じ has_data_day 判定）
-            _has_data = d["sales"] > 0 or d["qty"] > 0
-            d["cum_qty"] = _running_q if _has_data else None
-
-        for i, d in enumerate(daily):
-            day_iso = (chart_daily_start + timedelta(days=i)).isoformat()
-            if day_iso in _snap_map:
-                d["inv_est"] = _snap_map[day_iso]
-            else:
-                d["inv_est"] = None  # 実測値が無い日は描画しない
-
-        # 月別
-        # 要件: preset=year はその年の1〜12月を全て横軸表示（データなし月は0）
-        # それ以外（this/prev/custom）はデータがある月のみ
-        if preset == "year":
-            month_keys = [f"{_sd.year}-{m:02d}" for m in range(1, 13)]
-        else:
-            month_keys = sorted(by_month.keys())
-        monthly = []
-        # other_exp は月数で均等割り（preset=year で 12月分）
-        other_exp_per_month = other_exp / max(1, len(ym_set))
-        cum_profit_running_m = 0
-        for k in month_keys:
-            b = by_month.get(k, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
-            # その月の ship_total（base + per_item × その月のASIN登録数）+ その月の other_exp
-            # KPI と同じ式で月毎に引くことで合計が KPI 利益と一致する
-            m_ship = ship_total_by_ym.get(k, 0)
-            per_month_exp = m_ship + other_exp_per_month
-            prof = _profit_of(b, per_month_exp)
-            # 累計利益: 実測値（売上または販売数があった月）のみ表示。
-            # データの無い月は null（グラフ上で線を切る）。値そのものは累積していく。
-            has_data = b["sales"] > 0 or b["qty"] > 0
-            cum_profit_running_m += prof
-            cum_profit_val = round(cum_profit_running_m) if has_data else None
-            monthly.append({
-                "k": k, "sales": b["sales"], "qty": b["qty"],
-                "profit": round(prof),
-                "cum_profit": cum_profit_val,
-            })
-        # 月別: 前期間（年なら前年）の月別売上を同じ月数で並べる
-        if preset == "year":
-            prev_ym_sorted = [f"{_sd.year - 1}-{m:02d}" for m in range(1, 13)]
-        else:
-            prev_ym_sorted = sorted(prev_by_month.keys())
-        # monthly でも累計を渡す（cum_prev=前期間の累計売上）
-        _prev_cum_m = 0
-        for i, m in enumerate(monthly):
-            if i < len(prev_ym_sorted):
-                _prev_cum_m += prev_by_month.get(prev_ym_sorted[i], 0)
-            m["cum_prev"] = _prev_cum_m
-
-        # ----- 累計販売数 + 在庫数の推移（月別） -----
-        # 在庫数は各月の最終スナップショット（月末値の代用）のみ表示。
-        # スナップショットが無い月は描画しない。
-        _ym_snap_map = {}
-        try:
-            with get_db() as _conn_snap_m:
-                _snap_rows_m = _conn_snap_m.execute("""
-                    SELECT substr(snapshot_date,1,7) AS ym,
-                           count_active,
-                           snapshot_date
-                    FROM inventory_snapshots
-                """).fetchall()
-            for r in _snap_rows_m:
-                ym = r["ym"]
-                cur_best = _ym_snap_map.get(ym)
-                if cur_best is None or r["snapshot_date"] > cur_best[1]:
-                    _ym_snap_map[ym] = (r["count_active"], r["snapshot_date"])
-        except Exception:
-            _ym_snap_map = {}
-
-        _running_qm = 0
-        for m in monthly:
-            _running_qm += m["qty"]
-            ym_key = m["k"]
-            # 実データがある月のみ販売数バー・累計販売数を表示
-            # 未来月や売上ゼロ月は null（プロット飛ばし、点同士は spanGaps:true で結合）
-            _has_data_m = (m["sales"] or 0) > 0 or (m["qty"] or 0) > 0
-            m["cum_qty"] = _running_qm if _has_data_m else None
-            if not _has_data_m:
-                m["qty"] = None  # 販売数の棒も描画しない
-            if ym_key in _ym_snap_map:
-                m["inv_est"] = _ym_snap_map[ym_key][0]
-            else:
-                m["inv_est"] = None  # 実測値が無い月は描画しない
-
-        # ----- 市場活況度スコア（BSR 履歴から月別中央値）-----
-        # 各 ASIN の BSR 履歴を月別に集約 → 中央値を算出 → 全在庫で月別中央値
-        # スコア = max(0, 100 - 10 × log10(BSR))   数字が大きいほど市場活況
-        import math as _math
-        import json as _json_bsr
-        with get_db() as _conn3:
-            _bsr_rows = [r["bsr_history_json"] for r in _conn3.execute(
-                "SELECT bsr_history_json FROM inventory "
-                "WHERE bsr_history_json IS NOT NULL AND bsr_history_json != '[]'"
-            ).fetchall()]
-            try:
-                from config import DB_PATH as _DBP
-                _diag = _conn3.execute(
-                    "SELECT COUNT(*) AS c FROM inventory WHERE bsr_history_json IS NOT NULL"
-                ).fetchone()
-                with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
-                    _f.write(f"  DB_PATH={_DBP} bsr_rows={len(_bsr_rows)} hist_total={_diag['c']}\n")
-                    if _bsr_rows:
-                        _sample = _bsr_rows[0] or ""
-                        _f.write(f"  sample0 len={len(_sample)} head={_sample[:100]}\n")
-            except Exception as _e:
-                pass
-        # 月別 ym_score 計算（自社在庫BSRの月別中央値）— 月次グラフ用なので live 計算続行
-        # 日次は別途 bsr_score_daily_cache から取得するため、ここでは月単位のみ集計
-        market_score_by_ym = {}
-        _dbg_cnt = {"rows":0, "hist_items":0, "valid_items":0, "asins_with_ym":0}
-        _exc_log = []
-        for _r in _bsr_rows:
-            _dbg_cnt["rows"] += 1
-            try:
-                hist = _json_bsr.loads(_r or "[]")
-            except Exception as _je:
-                if len(_exc_log) < 3:
-                    _exc_log.append(f"{type(_je).__name__}: {_je}")
-                continue
-            asin_by_ym = {}
-            for h in hist:
-                _dbg_cnt["hist_items"] += 1
-                _date = h.get("date") or ""
-                _rank = h.get("rank")
-                if not _date or not _rank or _rank <= 0:
-                    continue
-                _dbg_cnt["valid_items"] += 1
-                asin_by_ym.setdefault(_date[:7], []).append(_rank)
-            if asin_by_ym:
-                _dbg_cnt["asins_with_ym"] += 1
-            for _ym, _ranks in asin_by_ym.items():
-                if not _ranks:
-                    continue
-                _med = sorted(_ranks)[len(_ranks) // 2]
-                market_score_by_ym.setdefault(_ym, []).append(_med)
-        ym_score = {}
-        for _ym, _meds in market_score_by_ym.items():
-            if not _meds:
-                continue
-            _sorted = sorted(_meds)
-            _global_med = _sorted[len(_sorted) // 2]
-            _raw = max(0, 100 - 10 * _math.log10(max(1, _global_med)))
-            ym_score[_ym] = {"raw": _raw, "median_bsr": _global_med}
-        # 過去5年（直近60ヶ月）の min/max でスケーリング
-        from datetime import date as _date_cls
-        _today = _date_cls.today()
-        _cutoff_y = _today.year - 5
-        _cutoff_m = _today.month
-        _recent_raws = [v["raw"] for k, v in ym_score.items()
-                        if (int(k[:4]), int(k[5:7])) >= (_cutoff_y, _cutoff_m)]
-        if _recent_raws and len(_recent_raws) >= 2:
-            _rmin, _rmax = min(_recent_raws), max(_recent_raws)
-            _span = max(0.01, _rmax - _rmin)
-            for _ym, v in ym_score.items():
-                _scaled = 10 + (v["raw"] - _rmin) / _span * 80
-                v["score"] = round(max(0, min(100, _scaled)), 1)
-        else:
-            for _ym, v in ym_score.items():
-                v["score"] = round(v["raw"], 1)
-        _cutoff_day_iso = (_today - timedelta(days=1825)).isoformat()
-        # monthly に market_score / market_bsr を埋める
-        for m in monthly:
-            ks = ym_score.get(m["k"])
-            if ks:
-                m["market_score"] = ks["score"]
-                m["market_bsr"] = ks["median_bsr"]
-            else:
-                m["market_score"] = None
-                m["market_bsr"] = None
-
-        # ----- カメラ市場全体スコア（market_score_cache から）-----
-        try:
-            with get_db() as _conn4:
-                _mrows = _conn4.execute(
-                    "SELECT ym, score, median_bsr FROM market_score_cache"
-                ).fetchall()
-            _market_full = {r["ym"]: {"score": r["score"], "median_bsr": r["median_bsr"]}
-                            for r in _mrows}
-            for m in monthly:
-                mf = _market_full.get(m["k"])
-                if mf:
-                    m["market_full_score"] = mf["score"]
-                    m["market_full_bsr"] = mf["median_bsr"]
-                else:
-                    m["market_full_score"] = None
-                    m["market_full_bsr"] = None
-        except Exception:
-            for m in monthly:
-                m["market_full_score"] = None
-                m["market_full_bsr"] = None
-            _market_full = {}
-
-        # ----- 日次BSRスコア: bsr_score_daily_cache から取得（高速）-----
-        # 重い JSON parse + median 計算は深夜バッチで済ませてあるので、ここは SELECT のみ。
-        # cache が空（初回起動直後など）の場合は空dictになり、グラフは market_score=None で表示。
-        day_score = {}        # 自社在庫スコア（source='inventory'）
-        day_score_full = {}   # 自社事業の市況スコア（source='market'）
-        try:
-            with get_db() as _conn_cache:
-                for _r in _conn_cache.execute(
-                    "SELECT date, source, median_bsr, raw_score, scaled_score "
-                    "FROM bsr_score_daily_cache"
-                ):
-                    _entry = {
-                        "median_bsr": _r["median_bsr"],
-                        "raw": _r["raw_score"],
-                        "score": _r["scaled_score"],
-                    }
-                    if _r["source"] == "inventory":
-                        day_score[_r["date"]] = _entry
-                    elif _r["source"] == "market":
-                        day_score_full[_r["date"]] = _entry
-        except Exception:
-            pass
-
-        # daily にスコアを埋める:
-        #   - 自社在庫スコア (market_score): 日次集計値を使用（在庫ASINだけなので軽い）
-        #   - 自社事業の市況スコア (market_full_score): 月別と同じく市況ASINの日次中央値から算出
-        #   - 未来日付（today より後）はプロットしない（None）
-        _today_iso = _today.isoformat()
-        for _i, _d in enumerate(daily):
-            _day_dt = chart_daily_start + timedelta(days=_i)
-            _day_iso = _day_dt.isoformat()
-            if _day_iso > _today_iso:
-                # 未来日: スコアプロット不要
-                _d["market_score"] = None
-                _d["market_bsr"] = None
-                _d["market_full_score"] = None
-                _d["market_full_bsr"] = None
-                continue
-            # 自社在庫スコア: 日次集計
-            _ks = day_score.get(_day_iso)
-            if _ks:
-                _d["market_score"] = _ks["score"]
-                _d["market_bsr"] = _ks["median_bsr"]
-            else:
-                _d["market_score"] = None
-                _d["market_bsr"] = None
-            # 自社事業の市況スコア: 市況ASIN日次集計
-            _ksf = day_score_full.get(_day_iso)
-            if _ksf:
-                _d["market_full_score"] = _ksf["score"]
-                _d["market_full_bsr"] = _ksf["median_bsr"]
-            else:
-                _d["market_full_score"] = None
-                _d["market_full_bsr"] = None
-
-        # DEBUG
-        try:
-            with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
-                _f.write(f"{datetime.now().isoformat()} ym_score keys={sorted(ym_score.keys())[-6:]}\n")
-                _f.write(f"  monthly k+score: {[(m['k'], m.get('market_score')) for m in monthly]}\n")
-                _f.write(f"  dbg_cnt: {_dbg_cnt} market_score_by_ym keys={sorted(market_score_by_ym.keys())[-6:]}\n")
-                _f.write(f"  exc_log: {_exc_log}\n")
-        except Exception as _e2:
-            try:
-                with open(config.LOGS_DIR / "market_debug.log", "a", encoding="utf-8") as _f:
-                    _f.write(f"  EXC: {_e2}\n")
-            except: pass
-
-        # 曜日別（0=日～6=土）: 固定費は按分しない（集計目的）
-        dow_labels = ["日", "月", "火", "水", "木", "金", "土"]
-        dow_mapped = []
-        for i in range(7):
-            b = by_dow.get(str(i), {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
-            prof = _profit_of(b, 0)  # 曜日別は固定費按分しない
-            dow_mapped.append({"k": dow_labels[i], "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
-
-        # 時間帯別（00〜23）
-        hour = []
-        for h in range(24):
-            hk = f"{h:02d}"
-            b = by_hour.get(hk, {"sales":0,"qty":0,"cost":0,"fee":0,"ship":0,"promo":0})
-            prof = _profit_of(b, 0)
-            hour.append({"k": f"{h}時", "sales": b["sales"], "qty": b["qty"], "profit": round(prof)})
+        daily, prev_by_month = _build_daily_series(
+            agg["by_day"], chart_daily_start, chart_daily_end, per_day_exp,
+            cu, prev_start_date, prev_end_date, return_model)
+        monthly = _build_monthly_series(
+            preset, period["sd"], agg["by_month"], ym_set, other_exp,
+            base["ship_total_by_ym"], prev_by_month)
+        _market_score_section(daily, monthly, chart_daily_start)
+        dow_mapped, hour = _build_dow_hour(agg["by_dow"], agg["by_hour"])
 
         # パスで描画するテンプレートを切替（同一データを2画面に分けて表示）
         _tpl = "accounting.html" if request.path == "/accounting" else "analytics.html"
@@ -2496,110 +2735,14 @@ def create_app():
         rank_buckets = {"S": 0, "A": 0, "B": 0, "C": 0, "?": 0}
         if request.path != "/accounting":
             try:
-                with get_db() as _c:
-                    # 1. 販売スピード分布：ASIN登録日 → 販売日 の経過日数で集計
-                    # 右上の期間フィルタ（start_date 〜 end_date）で絞り込む
-                    # （Pending除外、return_model='exclude'なら返品も除外）
-                    _sql_sold = """
-                        SELECT o.purchase_date, oi.quantity_ordered AS q,
-                               r.id AS return_id, inv.asin_listed_at
-                        FROM orders o
-                        JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
-                        LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
-                        LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
-                        WHERE o.order_status IN ('Shipped', 'Unshipped')
-                          AND substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
-                    """
-                    import re as _re
-                    def _parse_listed_at(s):
-                        if not s:
-                            return None
-                        m = _re.match(r"(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})", str(s))
-                        if not m:
-                            return None
-                        try:
-                            return datetime(int(m[1]), int(m[2]), int(m[3])).date()
-                        except ValueError:
-                            return None
-                    for _r in _c.execute(_sql_sold, (start_date, end_date)):
-                        if return_model == "exclude" and _r["return_id"]:
-                            continue
-                        listed = _parse_listed_at(_r["asin_listed_at"])
-                        if not listed:
-                            continue
-                        try:
-                            purchased = datetime.fromisoformat(_r["purchase_date"][:10]).date()
-                        except (TypeError, ValueError):
-                            continue
-                        d = (purchased - listed).days
-                        if d < 0:
-                            continue  # データ異常（販売日 < 登録日）はスキップ
-                        q = _r["q"] or 0
-                        if d <= 30:
-                            sold_buckets["~30日"] += q
-                        elif d <= 60:
-                            sold_buckets["30-60日"] += q
-                        elif d <= 90:
-                            sold_buckets["60-90日"] += q
-                        elif d <= 180:
-                            sold_buckets["90-180日"] += q
-                        else:
-                            sold_buckets["180日超"] += q
-
-                    # 2. 現在の Active 在庫の売れ行きランク分布
-                    _sql_inv = """
-                        SELECT inv.keepa_sales_90d, inv.offers_json
-                        FROM inventory inv
-                        WHERE inv.status LIKE 'Active%' AND inv.quantity > 0
-                    """
-                    import json as _j
-                    for _r in _c.execute(_sql_inv):
-                        s = _r["keepa_sales_90d"]
-                        try:
-                            n = len(_j.loads(_r["offers_json"] or "[]"))
-                        except Exception:
-                            n = 0
-                        if not s or not n:
-                            rank_buckets["?"] += 1
-                            continue
-                        p = (s / 90) / n
-                        p30 = 1 - (1 - p) ** 30
-                        p60 = 1 - (1 - p) ** 60
-                        p90 = 1 - (1 - p) ** 90
-                        # 閾値 60%（在庫一覧と統一）
-                        if p30 >= 0.6:
-                            rank_buckets["S"] += 1
-                        elif p60 >= 0.6:
-                            rank_buckets["A"] += 1
-                        elif p90 >= 0.6:
-                            rank_buckets["B"] += 1
-                        else:
-                            rank_buckets["C"] += 1
+                _fill_sold_rank_buckets(sold_buckets, rank_buckets,
+                                        start_date, end_date, return_model)
             except Exception as _e:
                 app.logger.warning(f"analytics extra charts: {_e}")
 
-        # B/S オブジェクト + 使途不明金（期末差額）から推奨値を計算
-        bs_obj = _build_bs(
-            int(request.args.get("bs_year", now.year)),
-            int(request.args.get("bs_month", now.month)),
-            inventory_value,
-        )
-        # 期末の現在の Amazon未上場在庫の値を取得
-        _cur_unlisted = 0
-        for _sec in bs_obj["end"]["sections"]:
-            for _it in _sec["entries"]:
-                if _it["category"] == "Amazon未上場在庫":
-                    _cur_unlisted = _it["amount"] or 0
-                    break
-        # 推奨値 = 現在値 - 期末差額（差額0なら現在値のまま）
-        unlisted_balance_hint = _cur_unlisted - bs_obj["end"]["totals"]["balance_diff"]
-        # 決算ページ: 月別比較表のデータを準備（B/S年と同じ年）
-        monthly_summaries = []
-        if request.path == "/accounting":
-            _bs_year = int(request.args.get("bs_year", now.year))
-            _last_month = now.month if _bs_year == now.year else 12
-            for _m in range(1, _last_month + 1):
-                monthly_summaries.append(_compute_monthly_summary(_bs_year, _m))
+        acct = _accounting_context(request.args, now, inventory_value,
+                                   request.path == "/accounting")
+        bs_obj = acct["bs_obj"]
         return render_template(
             _tpl,
             preset=preset,
@@ -2615,11 +2758,11 @@ def create_app():
             tax_breakdown=sorted(tax_cat_breakdown.items(), key=lambda x: -x[1]),
             pl=_build_pl(kpi, tax_cat_breakdown, non_op_income),
             bs=bs_obj,
-            unlisted_balance_hint=unlisted_balance_hint,
+            unlisted_balance_hint=acct["unlisted_balance_hint"],
             unlisted_diff=bs_obj["end"]["totals"]["balance_diff"],
             bs_years=list(range(now.year - 4, now.year + 1)),
             bs_months=list(range(1, 13)),
-            monthly_summaries=monthly_summaries,
+            monthly_summaries=acct["monthly_summaries"],
             sold_buckets=sold_buckets,
             rank_buckets=rank_buckets,
             prev_label=prev_label,
