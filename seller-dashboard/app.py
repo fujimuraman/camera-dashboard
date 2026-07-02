@@ -1,6 +1,7 @@
 """seller-dashboard Flask アプリケーション"""
 import io
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 
@@ -130,6 +131,38 @@ def _load_bs_column(year_month: str, auto_inventory: float, auto_profit: float,
     return {"year_month": year_month, "sections": sections, "totals": totals}
 
 
+# 年度確定（利益凍結）: settings.profit_closed_until = "YYYY-MM"（空なら無効）
+# - purchase_date がこの年月以前の注文は、後から返品が来ても集計から除外しない
+#   （申告済みの数字を遡って書き換えないため）
+# - 代わりに返品を「返品日の属する期間」に売上マイナス＋原価戻しとして調整計上する
+#   （税務の売上値引・返品処理と一致。純額 = 返金額 − 原価 が返品損として当期に乗る）
+# 返品 JOIN に追加する凍結条件（プレースホルダ2個 = closed_until を2回渡す）
+FROZEN_RETURNS_JOIN_COND = " AND (? = '' OR substr(o.purchase_date, 1, 7) > ?)"
+
+
+def _get_closed_until() -> str:
+    return get_setting("profit_closed_until", "") or ""
+
+
+def _frozen_return_rows(conn, start_date: str, end_date: str, closed_until: str):
+    """凍結期間（closed_until 以前）の注文への返品のうち、return_date が
+    [start_date, end_date] に入るものを返す。返品調整の計上に使う。
+    各行: return_date, item_price, quantity_ordered, cost_price"""
+    if not closed_until:
+        return []
+    return conn.execute("""
+        SELECT substr(r.return_date, 1, 10) AS return_date,
+               oi.item_price, oi.quantity_ordered, cp.cost_price
+        FROM returns r
+        JOIN orders o ON o.amazon_order_id = r.amazon_order_id
+        JOIN order_items oi ON oi.amazon_order_id = r.amazon_order_id
+                           AND oi.seller_sku = r.seller_sku
+        LEFT JOIN cost_prices cp ON cp.seller_sku = r.seller_sku
+        WHERE substr(o.purchase_date, 1, 7) <= ?
+          AND substr(r.return_date, 1, 10) BETWEEN ? AND ?
+    """, (closed_until, start_date, end_date)).fetchall()
+
+
 def _calc_cumulative_profit(year: int, end_month: int) -> float:
     """指定年の 1/1 〜 end_month末 までの当期純利益（簡易計算）"""
     with get_db() as conn:
@@ -144,7 +177,8 @@ def _calc_cumulative_profit(year: int, end_month: int) -> float:
             last_day = monthrange(year, end_month)[1]
             end = f"{year:04d}-{end_month:02d}-{last_day:02d}"
 
-        rows = conn.execute("""
+        cu = _get_closed_until()
+        rows = conn.execute(f"""
             SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
                    oi.title, oi.shipping_price, oi.promotion_discount,
                    cp.cost_price, r.id AS return_id
@@ -152,9 +186,10 @@ def _calc_cumulative_profit(year: int, end_month: int) -> float:
             JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
             LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
             LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                {FROZEN_RETURNS_JOIN_COND}
             WHERE substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
               AND o.order_status IN ('Shipped', 'Unshipped')
-        """, (start, end)).fetchall()
+        """, (cu, cu, start, end)).fetchall()
 
         rm = get_setting("profit_return_model", "exclude")
         sales = cost = fee_calc = ship_inc = promo = refund = 0
@@ -218,6 +253,11 @@ def _calc_cumulative_profit(year: int, end_month: int) -> float:
             ).fetchone()
             m_asin = (arow["n"] if arow else 0) or 0
             ship_total += m_base + m_per * m_asin
+        # 年度確定済み期間の注文への返品を、返品日基準で当期に調整計上
+        for fr in _frozen_return_rows(conn, start, end, cu):
+            fq = fr["quantity_ordered"] or 0
+            sales -= (fr["item_price"] or 0) * fq
+            cost -= (fr["cost_price"] or 0) * fq
         refund_ded = refund if rm == "subtract_refund" else 0
         return (sales + ship_inc - cost - amz_total - other_exp - ship_total - promo - refund_ded + non_op)
 
@@ -232,7 +272,8 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
 
     with get_db() as conn:
         # 注文行（Pending/Canceled除外、Return扱いはexcludeモード）
-        rows = conn.execute("""
+        cu = _get_closed_until()
+        rows = conn.execute(f"""
             SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
                    oi.title, oi.shipping_price, oi.promotion_discount,
                    cp.cost_price, r.id AS return_id
@@ -240,9 +281,10 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
             JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
             LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
             LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                {FROZEN_RETURNS_JOIN_COND}
             WHERE substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
               AND o.order_status IN ('Shipped','Unshipped')
-        """, (start_d, end_d)).fetchall()
+        """, (cu, cu, start_d, end_d)).fetchall()
 
         sales = cost = amz_fee_calc = ship_inc = promo = qty = 0
         for r in rows:
@@ -261,6 +303,12 @@ def _compute_monthly_summary(year: int, month: int) -> dict:
                 title = r["title"] or ""
                 rate = estimate_amazon_fee_rate(title, None)
                 amz_fee_calc += round(p * rate) * q
+
+        # 年度確定済み期間の注文への返品を、返品日基準で当月に調整計上
+        for fr in _frozen_return_rows(conn, start_d, end_d, cu):
+            fq = fr["quantity_ordered"] or 0
+            sales -= (fr["item_price"] or 0) * fq
+            cost -= (fr["cost_price"] or 0) * fq
 
         # 経費（その月分）
         amz_fee_exp = 0
@@ -845,7 +893,8 @@ def create_app():
         with get_db() as conn:
             # 今月の売上・販売数・仕入・利益（プライスター方式 / 売上分析と同じ式）
             # Pending用に inventory.listing_price も取得（item_price が NULL/0 のときの推定価格）
-            stats_rows = conn.execute("""
+            cu = _get_closed_until()
+            stats_rows = conn.execute(f"""
                 SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
                        oi.shipping_price, oi.promotion_discount,
                        oi.title, cp.cost_price, r.id AS return_id, o.order_status,
@@ -855,9 +904,10 @@ def create_app():
                 LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
                 LEFT JOIN inventory inv ON inv.seller_sku = oi.seller_sku
                 LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                    {FROZEN_RETURNS_JOIN_COND}
                 WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
                   AND substr(o.purchase_date, 1, 7) = substr(?, 1, 7)
-            """, (today,)).fetchall()
+            """, (cu, cu, today)).fetchall()
             # 返品計算モード: exclude=返品を集計から除外（再出品で在庫に戻る想定）
             #                   subtract_refund=プライスター方式（総計から返金額控除）
             return_model = get_setting("profit_return_model", "exclude")
@@ -894,6 +944,12 @@ def create_app():
                     rate = estimate_amazon_fee_rate(r["title"] or "", None)
                     amz_fee += round(p * rate) * q
             ym = target_dt.strftime("%Y-%m")
+            # 年度確定済み期間の注文への返品を、返品日基準で当月に調整計上
+            for fr in _frozen_return_rows(conn, ym + "-01", ym + "-31", cu):
+                fq = fr["quantity_ordered"] or 0
+                sales_total -= (fr["item_price"] or 0) * fq
+                cost_total -= (fr["cost_price"] or 0) * fq
+                return_count += 1
             # 売上分析と同じ式に揃える:
             # - other:   Amazon利用料・プラス計上を除く経費
             # - amz_fee_from_expense: Amazon利用料（FBA保管料・サブスク等の月次経費）
@@ -951,7 +1007,7 @@ def create_app():
             days_in_month = (next_first - first).days
 
             # 日別の売上・仕入・手数料・数量を集計（返品は return_model に従う、Pending は除外）
-            daily_rows = conn.execute("""
+            daily_rows = conn.execute(f"""
                 SELECT substr(o.purchase_date, 1, 10) AS day,
                        oi.item_price, oi.quantity_ordered,
                        oi.amazon_fee, oi.amazon_fee_confirmed, oi.title,
@@ -961,9 +1017,10 @@ def create_app():
                 JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
                 LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
                 LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                    {FROZEN_RETURNS_JOIN_COND}
                 WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
                   AND substr(o.purchase_date, 1, 7) = substr(?, 1, 7)
-            """, (today,)).fetchall()
+            """, (cu, cu, today)).fetchall()
             rm = get_setting("profit_return_model", "exclude")
             by_day_agg = {}  # day -> {sales, qty, cost, fee}
             for row in daily_rows:
@@ -990,6 +1047,12 @@ def create_app():
                 b["promo"]   += row["promotion_discount"] or 0
                 if is_ret:
                     b["refund"] += p * q
+            # 年度確定済み期間の注文への返品を、返品日の日別バケットに調整計上
+            for fr in _frozen_return_rows(conn, ym + "-01", ym + "-31", cu):
+                fq = fr["quantity_ordered"] or 0
+                b = by_day_agg.setdefault(fr["return_date"], {"sales":0,"qty":0,"cost":0,"fee":0,"ship_in":0,"promo":0,"refund":0})
+                b["sales"] -= (fr["item_price"] or 0) * fq
+                b["cost"] -= (fr["cost_price"] or 0) * fq
             # 固定費（発送代行・その他経費）は日割りで按分
             other = conn.execute(
                 "SELECT COALESCE(SUM(amount),0) FROM expenses "
@@ -1038,15 +1101,16 @@ def create_app():
             prev_first = prev_last.replace(day=1)
             days_in_prev = (first - prev_first).days
             prev_ym = prev_first.strftime("%Y-%m")
-            prev_daily_rows = conn.execute("""
+            prev_daily_rows = conn.execute(f"""
                 SELECT substr(o.purchase_date, 1, 10) AS day,
                        oi.item_price, oi.quantity_ordered, r.id AS return_id, o.order_status
                 FROM orders o
                 JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
                 LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                    {FROZEN_RETURNS_JOIN_COND}
                 WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
                   AND substr(o.purchase_date, 1, 7) = ?
-            """, (prev_ym,)).fetchall()
+            """, (cu, cu, prev_ym)).fetchall()
             prev_by_day = {}
             for row in prev_daily_rows:
                 if row["order_status"] == "Pending":
@@ -1780,6 +1844,7 @@ def create_app():
             params = (start_date, end_date)
 
             # KPI の素データ（Pending は価格未確定のため除外、Unshipped は含める）
+            cu = _get_closed_until()
             rows = conn.execute(f"""
                 SELECT oi.item_price, oi.quantity_ordered, oi.amazon_fee, oi.amazon_fee_confirmed,
                        oi.title, oi.shipping_price, oi.promotion_discount,
@@ -1789,9 +1854,13 @@ def create_app():
                 JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
                 LEFT JOIN cost_prices cp ON cp.seller_sku = oi.seller_sku
                 LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                    {FROZEN_RETURNS_JOIN_COND}
                 WHERE substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
                   AND o.order_status IN ('Shipped', 'Unshipped')
-            """, params).fetchall()
+            """, (cu, cu) + params).fetchall()
+
+            # 年度確定済み期間の注文への返品（返品日が期間内）→ 調整計上用
+            frozen_adj_rows = _frozen_return_rows(conn, start_date, end_date, cu)
 
             # 発送代行手数料: per_item は注文画面・在庫画面の表示用に「最新値」を1つ取得
             ship_row = conn.execute(
@@ -1962,6 +2031,18 @@ def create_app():
                 if hour_key is not None:
                     _bump(by_hour, hour_key, row_sales, q, row_cost, row_fee, row_ship, row_promo)
 
+        # 年度確定済み期間の注文への返品を、返品日基準で当期に調整計上
+        # （売上マイナス＋原価戻し。曜日別・時間帯別の傾向分析には乗せない）
+        for fr in frozen_adj_rows:
+            fq = fr["quantity_ordered"] or 0
+            adj_sales = -(fr["item_price"] or 0) * fq
+            adj_cost = -(fr["cost_price"] or 0) * fq
+            sales_total += adj_sales
+            cost_total += adj_cost
+            rd = fr["return_date"]
+            _bump(by_day, rd, adj_sales, 0, adj_cost, 0, 0, 0)
+            _bump(by_month, rd[:7], adj_sales, 0, adj_cost, 0, 0, 0)
+
         # Amazon 手数料合計:
         #   amz_fee_calc        = 個別注文の Item Commission/FBA手数料（確定値 or レート推定）
         #   amz_fee_from_expense = 月次の Amazon利用料（サブスクリプション・FBA保管料・
@@ -2071,16 +2152,17 @@ def create_app():
 
         # ----- 前期間の日別累計（daily/monthly と重ねるため）-----
         with get_db() as _conn2:
-            _prev_rows = _conn2.execute("""
+            _prev_rows = _conn2.execute(f"""
                 SELECT substr(o.purchase_date, 1, 10) AS day,
                        substr(o.purchase_date, 1, 7) AS ym,
                        oi.item_price, oi.quantity_ordered, r.id AS return_id, o.order_status
                 FROM orders o
                 JOIN order_items oi ON oi.amazon_order_id = o.amazon_order_id
                 LEFT JOIN returns r ON r.amazon_order_id = o.amazon_order_id AND r.seller_sku = oi.seller_sku
+                    {FROZEN_RETURNS_JOIN_COND}
                 WHERE o.order_status IN ('Shipped', 'Pending', 'Unshipped')
                   AND substr(o.purchase_date, 1, 10) BETWEEN ? AND ?
-            """, (prev_start_date, prev_end_date)).fetchall()
+            """, (cu, cu, prev_start_date, prev_end_date)).fetchall()
         prev_by_day = {}
         prev_by_month = {}
         for _r in _prev_rows:
@@ -2765,7 +2847,14 @@ def create_app():
                 if rm not in ("exclude", "subtract_refund"):
                     rm = "exclude"
                 set_setting("profit_return_model", rm)
-                flash("利益計算ロジックを保存しました", "success")
+                # 年度確定（利益凍結）: 空 or YYYY-MM のみ受け付ける
+                cu_in = (request.form.get("profit_closed_until") or "").strip()
+                if cu_in and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", cu_in):
+                    flash("年度確定の年月は YYYY-MM 形式で入力してください（例: 2026-12）", "danger")
+                else:
+                    set_setting("profit_closed_until", cu_in)
+                    flash("利益計算ロジックを保存しました"
+                          + (f"（{cu_in} 以前の利益を凍結）" if cu_in else ""), "success")
             elif form_type == "price_diverge":
                 try:
                     thr = max(0, int(request.form.get("price_diverge_threshold", "1000")))
@@ -2892,6 +2981,7 @@ def create_app():
             "match_offset_yen": int(get_setting("match_offset_yen", "0") or 0),
             "match_offset_pct": float(get_setting("match_offset_pct", "0") or 0),
             "profit_return_model": get_setting("profit_return_model", "exclude"),
+            "profit_closed_until": get_setting("profit_closed_until", "") or "",
             "price_diverge_threshold": get_setting("price_diverge_threshold", "1000"),
             "inline_price_apply_mode": get_setting("inline_price_apply_mode", "manual"),
             "market_bsr_enabled": get_setting("market_bsr_enabled", "0") == "1",

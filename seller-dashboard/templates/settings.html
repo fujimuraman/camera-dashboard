@@ -335,6 +335,20 @@
           </small>
         </label>
       </div>
+      <hr>
+      <div class="mt-2">
+        <label class="form-label" for="profit_closed_until">
+          <strong>年度確定（利益凍結）</strong>
+          <small class="text-muted d-block">
+            確定申告済みの期間を指定すると、その年月以前の注文は後から返品が来ても利益を書き換えません。
+            代わりに返品分を「返品日の月」に売上マイナス＋原価戻しとして計上します（年跨ぎ返品の税務整合用）。
+            空欄なら無効（従来どおり返品を遡って反映）。
+          </small>
+        </label>
+        <input class="form-control" style="max-width: 160px" type="month"
+               id="profit_closed_until" name="profit_closed_until"
+               value="{{ profit_closed_until }}" placeholder="例: 2026-12">
+      </div>
       <button class="btn btn-primary mt-3">保存</button>
     </div>
   </div>
