@@ -17,7 +17,7 @@ if not val.startswith("amzn1.oa2-cs.v1."):
 text = open(ENV, encoding="utf-8").read()
 if not re.search(rf"^{key}=", text, re.M):
     sys.exit(f"{key} が .env に無い")
-shutil.copy(ENV, r"C:\Users\cocor\AppData\Local\Temp\claude\C--claude\e6715bf0-b204-48d2-9e12-03d2c4fbc68b\scratchpad\env.bak_" + datetime.now().strftime("%Y%m%d%H%M%S"))
+shutil.copy(ENV, os.path.join(os.environ["TEMP"], "env.bak_" + datetime.now().strftime("%Y%m%d%H%M%S")))
 text = re.sub(rf"^{key}=.*$", f"{key}={val}", text, flags=re.M)
 open(ENV, "w", encoding="utf-8").write(text)
 subprocess.run(["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value ' '"])
