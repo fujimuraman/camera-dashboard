@@ -1,6 +1,6 @@
 """AIS3 の出品ファイル（〇〇shipping.tsv）と削除ファイル（〇〇deleting.tsv）を You and Me に反映する
 
-使い方: python upload_ais3_files.py [--dry-run] <ファイル or フォルダ> [...]
+使い方: python upload_ais3_files.py [--dry-run] [--force] <ファイル or フォルダ> [...]
   - shipping: リードタイム・在庫数・説明文を fix_ais3_listing_file のルールで直してから
     在庫数/リードタイム・価格（販売価格・最低/最高価格）・商品の状態の説明を PATCH
     （出品に無い SKU は LISTING_OFFER_ONLY で新規作成）
@@ -20,6 +20,7 @@ from sp_api.api import Feeds, Orders, Reports
 MP = "A1VC38T7YXB528"
 SELLER = os.getenv("YANDME_SELLER_ID")
 CHUNK = 10000
+MAX_DELETE_RATIO = 0.7  # これを超える削除は止めてかおるに確認する
 LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
 
 
@@ -58,7 +59,12 @@ def payload_of(res):
 
 
 def current_skus():
-    """出品中の SKU（GET_MERCHANT_LISTINGS_ALL_DATA）"""
+    """出品中の SKU（停止中も含む）"""
+    return {r["出品者SKU"] for r in listing_rows()}
+
+
+def listing_rows():
+    """全出品レポート（GET_MERCHANT_LISTINGS_ALL_DATA）の行"""
     rp = get_client("yandme", Reports)
     rid = rp.create_report(reportType="GET_MERCHANT_LISTINGS_ALL_DATA", marketplaceIds=[MP]).payload["reportId"]
     while True:
@@ -68,8 +74,8 @@ def current_skus():
         time.sleep(30)
     doc = payload_of(rp.get_report_document(p["reportDocumentId"], download=True))["document"]
     lines = doc.splitlines()
-    i = lines[0].split("\t").index("出品者SKU")
-    return {l.split("\t")[i] for l in lines[1:] if l.strip()}
+    head = lines[0].lstrip("﻿").split("\t")
+    return [dict(zip(head, l.split("\t"))) for l in lines[1:] if l.strip()]
 
 
 def open_order_skus():
@@ -159,9 +165,9 @@ def submit(msgs, log):
 
 def main():
     args = sys.argv[1:]
-    dry = "--dry-run" in args
+    dry, force = "--dry-run" in args, "--force" in args
     files = []
-    for a in (x for x in args if x != "--dry-run"):
+    for a in (x for x in args if not x.startswith("--")):
         p = Path(a)
         files += sorted(p.glob("*shipping.tsv")) + sorted(p.glob("*deleting.tsv")) if p.is_dir() else [p]
     print("対象:", ", ".join(f.name for f in files))
@@ -170,6 +176,9 @@ def main():
     print(f"出品中 {len(listed)}件 / 未出荷の注文の SKU {len(keep)}件")
     msgs, stat = build_messages(files, listed, keep)
     print("内訳:", dict(stat))
+    ratio = stat["削除"] / max(1, stat["削除"] + stat["更新"] + stat["新規"])
+    if ratio > MAX_DELETE_RATIO and not force:
+        sys.exit(f"削除が {ratio:.0%} で多すぎる（上限 {MAX_DELETE_RATIO:.0%}）。中身を確かめて、よければ --force で再実行")
     if dry:
         print(json.dumps(msgs[:1], ensure_ascii=False)[:1500])
         return

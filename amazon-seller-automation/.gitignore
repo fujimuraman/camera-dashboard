@@ -32,3 +32,6 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# AIS3 週次の在庫見直しのデータ（商品・出品の情報）
+ais3_weekly/
