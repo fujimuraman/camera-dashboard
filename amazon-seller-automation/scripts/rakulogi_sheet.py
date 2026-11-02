@@ -162,8 +162,8 @@ def order_status(order_id):
 def stage_of(s, us_track, myus_out):
     """行の段階と、その段階でだけ要る確認（amazon_com / myus_shipments / なし）
 
-    ordered      注文をシートに記入。Amazon.com の購入待ち → 購入履歴で注文を探す
-    purchased    Amazon.com で購入済み・未発送 → 購入履歴で発送（追跡番号）を見る
+    ordered      注文をシートに記入。Amazon.com の購入待ち → 購入履歴で注文を探し、見つかったら商品代を書く
+    purchased    Amazon.com で購入済み・未発送（商品代は備考に書く）→ 購入履歴で発送（追跡番号）を見る
     us_shipping  Amazon.com から発送済み → 購入履歴で配達済みを見る
     us_delivered Amazon.com で配達済み・MyUS 未着 → 確認不要（到着メールで分かる。3日で問い合わせを促す）
     at_myus      MyUS に到着。転送は myus-forward とかおるの OK → 確認不要
