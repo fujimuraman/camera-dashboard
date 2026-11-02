@@ -11,7 +11,7 @@
       candidates の各件に postal / address / name / phone / image_url を足した JSON の配列を、
       「yy年度」タブの記入済みの一番下に追記する。書いた行番号を出す
   python rakulogi_sheet.py note <行> <Amazon.comの追跡番号> <商品代ドル>
-      備考欄（V）の末尾に追跡番号と「$45.99」を足す（見出しは付けない）
+      備考欄（V）の末尾に追跡番号と商品代「45.99」を足す（見出しも $ も付けない。金額と分からないように＝かおる指示）
   python rakulogi_sheet.py tracking <行> <MyUSの追跡番号>
       楽ロジ倉庫までの追跡番号（R）を書く
   python rakulogi_sheet.py rows
@@ -118,7 +118,7 @@ def cmd_note(row, tracking, price):
     if tracking in cur:
         print("既に書いてある")
         return
-    ws.update_acell(f"V{row}", f"{cur}\n{tracking}\n${float(price.lstrip('$')):.2f}".lstrip("\n"))
+    ws.update_acell(f"V{row}", f"{cur}\n{tracking}\n{float(price.lstrip('$')):.2f}".lstrip("\n"))
     print("OK")
 
 
