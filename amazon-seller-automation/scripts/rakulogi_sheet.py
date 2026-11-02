@@ -280,7 +280,7 @@ def cmd_rows():
             left = (ship - today).days
             if left <= ALERT_SHIP_NOTICE:
                 alerts.append(f"出荷通知の期限まで{left}日" if left >= 0 else f"出荷通知の期限を{-left}日過ぎた")
-        if s.get("delivered") and not s.get("myus_package"):
+        if s.get("delivered") and not s.get("myus_package") and not s.get("myus_inquired"):
             waited = (today - datetime.fromisoformat(s["delivered"]).replace(tzinfo=JST)).days
             if waited >= MYUS_ARRIVAL_DAYS:
                 alerts.append(f"Amazon.com で配達済みから{waited}日、MyUS に未着 → MyUS に問い合わせを")
