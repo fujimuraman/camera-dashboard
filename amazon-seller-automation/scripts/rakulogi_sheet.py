@@ -15,7 +15,8 @@
   python rakulogi_sheet.py tracking <行> <MyUSの追跡番号>
       楽ロジ倉庫までの追跡番号（R）を書く
   python rakulogi_sheet.py rows
-      今年度タブで国内発送前（楽ロジ使用国内追跡番号 X が空）の行を JSON で出す。期限・控え・知らせるべきこと付き
+      今年度タブで国内発送前（楽ロジ使用国内追跡番号 X が空）の行を JSON で出す。段階（stage）と、その段階で要る確認（check:
+      amazon_com / myus_shipments / 空＝確認不要）・期限・控え・知らせるべきこと付き。MyUS の到着一覧と追跡番号で自動照合する
   python rakulogi_sheet.py state <注文番号> <ASIN> key=value ...
       行ごとの控え（amazon_com_order / delivered / myus_package / myus_status など）を更新する
 """
@@ -143,9 +144,35 @@ def order_status(order_id):
         return ""
 
 
+def stage_of(s, us_track, myus_out):
+    """行の段階と、その段階でだけ要る確認（amazon_com / myus_shipments / なし）
+
+    ordered      注文をシートに記入。Amazon.com の購入待ち → 購入履歴で注文を探す
+    purchased    Amazon.com で購入済み・未発送 → 購入履歴で発送（追跡番号）を見る
+    us_shipping  Amazon.com から発送済み → 購入履歴で配達済みを見る
+    us_delivered Amazon.com で配達済み・MyUS 未着 → 確認不要（到着メールで分かる。3日で問い合わせを促す）
+    at_myus      MyUS に到着。転送は myus-forward とかおるの OK → 確認不要
+    myus_shipped MyUS の Ship 済み・R列が空 → MyUS の発送一覧で追跡番号を見る
+    to_rakulogi  R列記入済み。楽ロジの国内発送待ち → 確認不要（期限だけ見張る）
+    """
+    if myus_out:
+        return "to_rakulogi", ""
+    if s.get("myus_package"):
+        return ("myus_shipped", "myus_shipments") if s.get("myus_status") == "shipped" else ("at_myus", "")
+    if s.get("delivered"):
+        return "us_delivered", ""
+    if us_track:
+        return "us_shipping", "amazon_com"
+    if s.get("amazon_com_order"):
+        return "purchased", "amazon_com"
+    return "ordered", "amazon_com"
+
+
 def cmd_rows():
     values = sheet().get_all_values()
     st = load_state()
+    q = Path(r"C:\claude\logs\myus\queue.json")
+    myus = json.loads(q.read_text(encoding="utf-8")).get("packages", {}) if q.exists() else {}
     today = datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
     for i, r in enumerate(values):
         if i < 2 or len(r) < 24 or not r[2].strip() or r[23].strip():
@@ -155,8 +182,18 @@ def cmd_rows():
         deliver = parse_md((re.search(r"配達期限:(\S+)", note) or [None, ""])[1], order_date)
         ship = parse_md((re.search(r"出荷通知\((\S+?)\)", note) or [None, ""])[1], order_date)
         extra = [x for x in note.split("\n") if x and not x.startswith(("配達期限", "出荷通知"))]
-        s = st.get(f"{r[12]}|{r[13]}", {})
+        key = f"{r[12]}|{r[13]}"
+        s = st.setdefault(key, {})
+        us_track = extra[0] if extra else ""
+        if us_track and not s.get("myus_package"):
+            # MyUS 側の追跡番号は頭に英数字が付くことがあるので「含まれていれば一致」
+            hit = next((p for p in myus.values() if us_track in (p.get("tracking") or "")), None)
+            if hit:
+                s["myus_package"] = hit["package_id"]
+        if s.get("myus_package"):
+            s["myus_status"] = myus.get(s["myus_package"], {}).get("status", s.get("myus_status", ""))
         myus_out = bool(r[17].strip())
+        stage, check = stage_of(s, us_track, myus_out)
         alerts = []
         if deliver:
             left = (deliver - today).days
@@ -171,10 +208,12 @@ def cmd_rows():
             if waited >= MYUS_ARRIVAL_DAYS:
                 alerts.append(f"Amazon.com で配達済みから{waited}日、MyUS に未着 → MyUS に問い合わせを")
         print(json.dumps({"row": i + 1, "order_id": r[12], "asin": r[13], "title": r[14][:60],
-                          "amazon_com_tracking": extra[0] if extra else "", "price": extra[1] if len(extra) > 1 else "",
+                          "stage": stage, "check": check,
+                          "amazon_com_tracking": us_track, "price": extra[1] if len(extra) > 1 else "",
                           "myus_tracking": r[17], "deliver_by": deliver and f"{deliver.month}/{deliver.day}",
                           "ship_by": ship and f"{ship.month}/{ship.day}", "state": s, "alerts": alerts},
                          ensure_ascii=False))
+    save_state(st)
 
 
 def cmd_state(order_id, asin, pairs):
