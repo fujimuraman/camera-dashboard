@@ -10,8 +10,8 @@
   python rakulogi_sheet.py add <JSONファイル>
       candidates の各件に postal / address / name / phone / image_url を足した JSON の配列を、
       「yy年度」タブの記入済みの一番下に追記する。書いた行番号を出す
-  python rakulogi_sheet.py note <行> <Amazon.comの追跡番号> <商品代ドル>
-      備考欄（V）の末尾に追跡番号と商品代「45.99」を足す（見出しも $ も付けない。金額と分からないように＝かおる指示）
+  python rakulogi_sheet.py note <行> <Amazon.comの追跡番号 か -> <商品代ドル か ->
+      備考欄（V）の期限の下に追跡番号と商品代「45.99」を書く。購入を確認したら商品代だけ（追跡番号は -）、発送後に追跡番号だけ足せる（見出しも $ も付けない。金額と分からないように＝かおる指示）
   python rakulogi_sheet.py tracking <行> <MyUSの追跡番号>
       楽ロジ倉庫までの追跡番号（R）を書く
   python rakulogi_sheet.py rows
@@ -112,13 +112,28 @@ def cmd_add(path):
         print(json.dumps({"row": row, "order_id": x["order_id"], "asin": x["asin"]}, ensure_ascii=False))
 
 
+PRICE_RE = re.compile(r"^\d+\.\d{2}$")
+
+
+def split_note(note):
+    """備考を（期限の行, 追跡番号, 商品代）に分ける。商品代は「408.00」の形の行"""
+    head = [x for x in note.split("\n") if x.startswith(("配達期限", "出荷通知"))]
+    rest = [x for x in note.split("\n") if x and x not in head]
+    price = next((x for x in rest if PRICE_RE.match(x)), "")
+    track = next((x for x in rest if x != price), "")
+    return head, track, price
+
+
 def cmd_note(row, tracking, price):
+    """追跡番号と商品代を備考に書く。購入を確認した時点で商品代だけ（tracking に - ）、発送後に追跡番号を足す"""
     ws = sheet()
-    cur = ws.acell(f"V{row}").value or ""
-    if tracking in cur:
+    head, cur_track, cur_price = split_note(ws.acell(f"V{row}").value or "")
+    track = cur_track if tracking == "-" else tracking
+    price = f"{float(price.lstrip('$')):.2f}" if price not in ("", "-") else cur_price
+    if (track, price) == (cur_track, cur_price):
         print("既に書いてある")
         return
-    ws.update_acell(f"V{row}", f"{cur}\n{tracking}\n{float(price.lstrip('$')):.2f}".lstrip("\n"))
+    ws.update_acell(f"V{row}", "\n".join(head + [x for x in (track, price) if x]))
     print("OK")
 
 
@@ -181,10 +196,9 @@ def cmd_rows():
         note = r[21]
         deliver = parse_md((re.search(r"配達期限:(\S+)", note) or [None, ""])[1], order_date)
         ship = parse_md((re.search(r"出荷通知\((\S+?)\)", note) or [None, ""])[1], order_date)
-        extra = [x for x in note.split("\n") if x and not x.startswith(("配達期限", "出荷通知"))]
+        _, us_track, us_price = split_note(note)
         key = f"{r[12]}|{r[13]}"
         s = st.setdefault(key, {})
-        us_track = extra[0] if extra else ""
         if us_track and not s.get("myus_package"):
             # MyUS 側の追跡番号は頭に英数字が付くことがあるので「含まれていれば一致」
             hit = next((p for p in myus.values() if us_track in (p.get("tracking") or "")), None)
@@ -209,7 +223,7 @@ def cmd_rows():
                 alerts.append(f"Amazon.com で配達済みから{waited}日、MyUS に未着 → MyUS に問い合わせを")
         print(json.dumps({"row": i + 1, "order_id": r[12], "asin": r[13], "title": r[14][:60],
                           "stage": stage, "check": check,
-                          "amazon_com_tracking": us_track, "price": extra[1] if len(extra) > 1 else "",
+                          "amazon_com_tracking": us_track, "price": us_price,
                           "myus_tracking": r[17], "deliver_by": deliver and f"{deliver.month}/{deliver.day}",
                           "ship_by": ship and f"{ship.month}/{ship.day}", "state": s, "alerts": alerts},
                          ensure_ascii=False))
