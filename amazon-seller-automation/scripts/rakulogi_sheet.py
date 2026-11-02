@@ -105,7 +105,7 @@ def cmd_add(path):
         cells = {
             "C": x["purchase"], "D": SHOP_NAME, "F": x["postal"], "G": x["address"], "J": x["name"],
             "L": re.sub(r"[^0-9]", "", x["phone"]), "M": x["order_id"], "N": x["asin"], "O": x["title"],
-            "Q": x["image_url"], "V": f"配達期限:{x['deliver_by']}\n出荷通知({x['ship_by']})",
+            "Q": x["image_url"], "V": f"未購入({today_md()})\n{deadline_line(x['deliver_by'], x['ship_by'])}",
         }
         # P（=IMAGE()）と R〜U は触らない。電話番号の頭の0が消えないよう RAW で書く
         ws.batch_update([{"range": f"{c}{row}", "values": [[v]]} for c, v in cells.items()], value_input_option="RAW")
@@ -113,29 +113,82 @@ def cmd_add(path):
 
 
 PRICE_RE = re.compile(r"^\d+\.\d{2}$")
+TRACK_RE = re.compile(r"^[A-Za-z0-9]{8,40}$")
+DEADLINE_RE = re.compile(r"\d{1,2}/\d{1,2}")
+STATUS_RE = re.compile(r"^(未購入|発送待ち|発送中|MyUS配送中)\((\d{1,2}/\d{1,2})\)$")
+
+
+def parse_note(note):
+    """備考を分ける。並びは「段階(M/D) → 配達期限 → 出荷通知 → 商品代 → 追跡番号」（2026-11-02 かおる指示）。
+    どれにも当てはまらない行（かおるの手書きのメモ等）は others に残し、書き直す時も消さない"""
+    p = {"status": "", "head": [], "deliver": "", "ship": "", "price": "", "track": "", "others": []}
+    for x in note.split("\n"):
+        if not x:
+            continue
+        if not p["status"] and STATUS_RE.match(x):
+            p["status"] = x
+        elif x.startswith(("配達", "出荷通知", "発送")) and DEADLINE_RE.search(x):
+            # 1行の形「配達11/8 発送10/30」と、前の2行の形「配達期限:11/8」「出荷通知(10/30)」の両方を読む
+            p["head"].append(x)
+            m = re.search(r"配達(?:期限:)?(\d{1,2}/\d{1,2})", x)
+            p["deliver"] = m[1] if m else p["deliver"]
+            m = re.search(r"(?:出荷通知\(|発送)(\d{1,2}/\d{1,2})", x)
+            p["ship"] = m[1] if m else p["ship"]
+        elif not p["price"] and PRICE_RE.match(x):
+            p["price"] = x
+        elif not p["track"] and TRACK_RE.match(x):
+            p["track"] = x
+        else:
+            p["others"].append(x)
+    return p
+
+
+def deadline_line(deliver, ship):
+    return f"配達{deliver} 発送{ship}"
+
+
+def build_note(p):
+    """4行に収める（はみ出さないように＝かおる指示）: 段階(M/D) / 配達M/D 発送M/D / 商品代 / 追跡番号"""
+    head = deadline_line(p["deliver"], p["ship"]) if p["deliver"] or p["ship"] else ""
+    return "\n".join([x for x in [p["status"], head, p["price"], p["track"], *p["others"]] if x])
 
 
 def split_note(note):
-    """備考を（期限の行, 追跡番号, 商品代）に分ける。商品代は「408.00」の形の行"""
-    head = [x for x in note.split("\n") if x.startswith(("配達期限", "出荷通知"))]
-    rest = [x for x in note.split("\n") if x and x not in head]
-    price = next((x for x in rest if PRICE_RE.match(x)), "")
-    track = next((x for x in rest if x != price), "")
-    return head, track, price
+    p = parse_note(note)
+    return p["head"], p["track"], p["price"]
+
+
+def status_of(p, myus_tracking):
+    """シートの中身から段階を決める（かおるが手で書いても合うように、控えではなくシートを見る）"""
+    if myus_tracking:
+        return "MyUS配送中"
+    if p["track"]:
+        return "発送中"
+    if p["price"]:
+        return "発送待ち"
+    return "未購入"
+
+
+def today_md():
+    d = datetime.now(JST)
+    return f"{d.month}/{d.day}"
 
 
 def cmd_note(row, tracking, price):
-    """追跡番号と商品代を備考に書く。購入を確認した時点で商品代だけ（tracking に - ）、発送後に追跡番号を足す"""
+    """商品代と追跡番号を備考に書く。購入を確認した時点で商品代だけ（tracking に - ）、発送後に追跡番号を足す"""
     ws = sheet()
-    head, cur_track, cur_price = split_note(ws.acell(f"V{row}").value or "")
-    track = cur_track if tracking == "-" else tracking
-    price = f"{float(price.lstrip('$')):.2f}" if price not in ("", "-") else cur_price
-    if (track, price) == (cur_track, cur_price):
+    cur = ws.acell(f"V{row}").value or ""
+    p = parse_note(cur)
+    if tracking != "-":
+        p["track"] = tracking
+    if price not in ("", "-"):
+        p["price"] = f"{float(price.lstrip('$')):.2f}"
+    new = build_note(p)
+    if new == cur:
         print("既に書いてある")
         return
-    # 金額が先、その下に追跡番号（かおるが手で書く時と同じ順）
-    ws.update_acell(f"V{row}", "\n".join(head + [x for x in (price, track) if x]))
-    print("OK")
+    ws.update_acell(f"V{row}", new)
+    print("OK（段階の行は rows が直す）")
 
 
 def cmd_tracking(row, tracking):
@@ -160,7 +213,7 @@ def order_status(order_id):
         return ""
 
 
-def stage_of(s, us_track, myus_out):
+def stage_of(s, us_track, myus_out, us_price=""):
     """行の段階と、その段階でだけ要る確認（amazon_com / myus_shipments / なし）
 
     ordered      注文をシートに記入。Amazon.com の購入待ち → 購入履歴で注文を探し、見つかったら商品代を書く
@@ -179,13 +232,15 @@ def stage_of(s, us_track, myus_out):
         return "us_delivered", ""
     if us_track:
         return "us_shipping", "amazon_com"
-    if s.get("amazon_com_order"):
+    if s.get("amazon_com_order") or us_price:
         return "purchased", "amazon_com"
     return "ordered", "amazon_com"
 
 
 def cmd_rows():
-    values = sheet().get_all_values()
+    ws = sheet()
+    values = ws.get_all_values()
+    status_updates = []
     st = load_state()
     q = Path(r"C:\claude\logs\myus\queue.json")
     myus = json.loads(q.read_text(encoding="utf-8")).get("packages", {}) if q.exists() else {}
@@ -195,8 +250,9 @@ def cmd_rows():
             continue  # 注文日なし、または国内発送済み（X 楽ロジ使用国内追跡番号）
         order_date = parse_md(r[2], today - timedelta(days=300)) or today
         note = r[21]
-        deliver = parse_md((re.search(r"配達期限:(\S+)", note) or [None, ""])[1], order_date)
-        ship = parse_md((re.search(r"出荷通知\((\S+?)\)", note) or [None, ""])[1], order_date)
+        p = parse_note(note)
+        deliver = parse_md(p["deliver"], order_date)
+        ship = parse_md(p["ship"], order_date)
         _, us_track, us_price = split_note(note)
         key = f"{r[12]}|{r[13]}"
         s = st.setdefault(key, {})
@@ -208,7 +264,13 @@ def cmd_rows():
         if s.get("myus_package"):
             s["myus_status"] = myus.get(s["myus_package"], {}).get("status", s.get("myus_status", ""))
         myus_out = bool(r[17].strip())
-        stage, check = stage_of(s, us_track, myus_out)
+        stage, check = stage_of(s, us_track, myus_out, us_price)
+        # 備考の一番上の「段階(変わった日)」を直す。段階の行以外は触らない
+        label = status_of(p, r[17].strip())
+        if not p["status"].startswith(label + "("):
+            p["status"] = f"{label}({today_md()})"
+        if build_note(p) != note:
+            status_updates.append({"range": f"V{i + 1}", "values": [[build_note(p)]]})
         alerts = []
         if deliver:
             left = (deliver - today).days
@@ -223,12 +285,15 @@ def cmd_rows():
             if waited >= MYUS_ARRIVAL_DAYS:
                 alerts.append(f"Amazon.com で配達済みから{waited}日、MyUS に未着 → MyUS に問い合わせを")
         print(json.dumps({"row": i + 1, "order_id": r[12], "asin": r[13], "title": r[14][:60],
-                          "stage": stage, "check": check,
+                          "status": p["status"], "stage": stage, "check": check,
                           "amazon_com_tracking": us_track, "price": us_price,
                           "myus_tracking": r[17], "deliver_by": deliver and f"{deliver.month}/{deliver.day}",
                           "ship_by": ship and f"{ship.month}/{ship.day}", "state": s, "alerts": alerts},
                          ensure_ascii=False))
     save_state(st)
+    if status_updates:
+        ws.batch_update(status_updates, value_input_option="RAW")
+        print(f"# 段階を更新: {', '.join(u['range'] for u in status_updates)}", file=sys.stderr)
 
 
 def cmd_state(order_id, asin, pairs):
