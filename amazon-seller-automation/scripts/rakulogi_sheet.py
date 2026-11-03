@@ -16,7 +16,7 @@
       楽ロジ倉庫までの追跡番号（R）を書く
   python rakulogi_sheet.py rows
       今年度タブで国内発送前（楽ロジ使用国内追跡番号 X が空）の行を JSON で出す。段階（stage）と、その段階で要る確認（check:
-      amazon_com / myus_shipments / 空＝確認不要）・期限・控え・知らせるべきこと付き。MyUS の到着一覧と追跡番号で自動照合する
+      amazon_com / myus_packages / myus_shipments をカンマ区切り・空＝確認不要）・期限・控え・知らせるべきこと付き。MyUS の到着一覧と追跡番号で自動照合する
   python rakulogi_sheet.py state <注文番号> <ASIN> key=value ...
       行ごとの控え（amazon_com_order / delivered / myus_package / myus_status など）を更新する
 """
@@ -218,8 +218,8 @@ def stage_of(s, us_track, myus_out, us_price=""):
 
     ordered      注文をシートに記入。Amazon.com の購入待ち → 購入履歴で注文を探し、見つかったら商品代を書く
     purchased    Amazon.com で購入済み・未発送（商品代は備考に書く）→ 購入履歴で発送（追跡番号）を見る
-    us_shipping  Amazon.com から発送済み → 購入履歴で配達済みを見る
-    us_delivered Amazon.com で配達済み・MyUS 未着 → 確認不要（到着メールで分かる。3日で問い合わせを促す）
+    us_shipping  Amazon.com から発送済み → 購入履歴で配達済みを見る＋MyUS の Your Packages に届いてないか見る
+    us_delivered Amazon.com で配達済み・MyUS 未着 → MyUS の Your Packages を見る（到着メールが来ない時の保険。3日で問い合わせを促す）
     at_myus      MyUS に到着。転送は myus-forward とかおるの OK → 確認不要
     myus_shipped MyUS の Ship 済み・R列が空 → MyUS の発送一覧で追跡番号を見る
     to_rakulogi  R列記入済み。楽ロジの国内発送待ち → 確認不要（期限だけ見張る）
@@ -229,9 +229,9 @@ def stage_of(s, us_track, myus_out, us_price=""):
     if s.get("myus_package"):
         return ("myus_shipped", "myus_shipments") if s.get("myus_status") == "shipped" else ("at_myus", "")
     if s.get("delivered"):
-        return "us_delivered", ""
+        return "us_delivered", "myus_packages"
     if us_track:
-        return "us_shipping", "amazon_com"
+        return "us_shipping", "amazon_com,myus_packages"
     if s.get("amazon_com_order") or us_price:
         return "purchased", "amazon_com"
     return "ordered", "amazon_com"
